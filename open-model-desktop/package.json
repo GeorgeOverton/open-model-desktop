@@ -1,0 +1,108 @@
+{
+  "name": "open-model-desktop",
+  "productName": "Open Model Desktop",
+  "version": "0.7.0",
+  "description": "Find, download and chat with open AI models offline, with voice wake phrases.",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never",
+    "release": "electron-builder --win --x64 --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.12",
+    "kokoro-js": "^1.2.1",
+    "node-llama-cpp": "3.22.3",
+    "vosk-browser": "0.0.8"
+  },
+  "devDependencies": {
+    "electron": "45.3.2",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "app.openmodel.desktop",
+    "productName": "Open Model Desktop",
+    "files": [
+      "main.js",
+      "engine.mjs",
+      "tts.mjs",
+      "mcp-server.mjs",
+      "claude.mjs",
+      "router.mjs",
+      "preload.cjs",
+      "renderer/**",
+      "assets/**",
+      "package.json",
+      "node_modules/**"
+    ],
+    "asarUnpack": [
+      "node_modules/node-llama-cpp/**",
+      "node_modules/@node-llama-cpp/**",
+      "node_modules/onnxruntime-node/**",
+      "node_modules/onnxruntime-common/**",
+      "node_modules/sharp/**",
+      "node_modules/@img/**",
+      "node_modules/kokoro-js/**",
+      "node_modules/phonemizer/**",
+      "node_modules/@huggingface/transformers/**",
+      "mcp-server.mjs"
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Voice mode listens for your wake phrase. Audio never leaves this computer."
+      },
+      "icon": "build/icon.png"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "files": [
+        "!node_modules/@node-llama-cpp/linux-*/**",
+        "!node_modules/@node-llama-cpp/mac-*/**",
+        "!node_modules/onnxruntime-node/bin/napi-v3/linux/**",
+        "!node_modules/onnxruntime-node/bin/napi-v3/darwin/**",
+        "!node_modules/onnxruntime-node/bin/napi-v3/win32/arm64/**",
+        "!node_modules/onnxruntime-web/**",
+        "!node_modules/@img/sharp-linux*/**",
+        "!node_modules/@img/sharp-libvips-linux*/**"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Open Model Desktop",
+      "runAfterFinish": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "Open-Model-Desktop-Setup-${version}.exe",
+      "uninstallDisplayName": "Open Model Desktop"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Utility",
+      "icon": "build/icon.png",
+      "files": [
+        "!node_modules/@node-llama-cpp/win-*/**",
+        "!node_modules/@node-llama-cpp/mac-*/**",
+        "!node_modules/onnxruntime-node/bin/napi-v3/win32/**",
+        "!node_modules/onnxruntime-node/bin/napi-v3/darwin/**",
+        "!node_modules/onnxruntime-web/**",
+        "!node_modules/@img/sharp-win32*/**"
+      ]
+    },
+    "publish": null
+  }
+}

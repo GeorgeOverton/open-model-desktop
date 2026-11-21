@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' app: blob: data: https://huggingface.co; img-src 'self' data:; style-src 'self' 'unsafe-inline'; media-src 'self' blob: data:">
+  <title>Open Model Desktop</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="side">
+      <div class="brand">Open Model<br><span>Desktop</span></div>
+      <nav class="nav" role="tablist" aria-label="Sections">
+        <button role="tab" data-view="find" aria-selected="true"><span>🧭</span> Find models</button>
+        <button role="tab" data-view="mine" aria-selected="false"><span>📦</span> My models <b class="count" id="mineCount"></b></button>
+        <button role="tab" data-view="online" aria-selected="false"><span>🌐</span> Online models</button>
+        <button role="tab" data-view="chat" aria-selected="false"><span>💬</span> Chat</button>
+        <button role="tab" data-view="voice" aria-selected="false"><span>🎙️</span> Voice</button>
+        <button role="tab" data-view="settings" aria-selected="false"><span>⚙️</span> Settings</button>
+      </nav>
+      <div class="engine small" id="engineStatus">No model loaded</div>
+    </aside>
+
+    <main class="main">
+      <!-- FIND -->
+      <section class="view" id="view-find">
+        <header class="hero intro">
+          <div>
+            <div class="eyebrow">Free AI you can run at home</div>
+            <h1>Find a model that fits what you do and the computer you have.</h1>
+            <p class="lead">Click a model to see what it's good at and how hard it will make your computer work, then download it into this app. Once it's downloaded, it works with no internet.</p>
+          </div>
+          <div class="legend" aria-label="How demanding each model is">
+            <div class="eyebrow">How demanding is it?</div>
+            <div class="lrow"><span class="demand lv1"><b><i class="on"></i><i></i><i></i><i></i></b>Light</span><span>Any laptop with 8 GB of memory</span></div>
+            <div class="lrow"><span class="demand lv2"><b><i class="on"></i><i class="on"></i><i></i><i></i></b>Moderate</span><span>A 16 GB laptop or any Apple M-series Mac</span></div>
+            <div class="lrow"><span class="demand lv3"><b><i class="on"></i><i class="on"></i><i class="on"></i><i></i></b>Heavy</span><span>16 to 32 GB, ideally a graphics card</span></div>
+            <div class="lrow"><span class="demand lv4"><b><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></b>Very heavy</span><span>32 GB or a 16 GB+ graphics card</span></div>
+          </div>
+        </header>
+        <details class="howto">
+          <summary>New to this? What the words mean (1 minute read)</summary>
+          <p class="small"><strong>"4B"</strong> means 4 billion parameters. Bigger is usually smarter but needs more memory and runs slower.
+            <strong>"Q4_K_M"</strong> is a compressed version of the model. It's the recommended balance of size and quality for most people, and the app picks it for you.</p>
+          <p class="small"><strong>Memory:</strong> we've guessed your computer's memory below. On a Mac with Apple Silicon (M1 to M4) that's all you need.
+            On a PC with an NVIDIA or AMD graphics card, models run fastest when they fit in the card's memory, but they still work using normal memory (slower).</p>
+        </details>
+
+        <section class="controls" aria-label="Filters">
+          <div class="control">
+            <h2 class="label">1. How much memory does your computer have? <span class="muted small" id="ramGuess"></span></h2>
+            <div class="seg" id="ram" role="radiogroup" aria-label="Computer memory"></div>
+          </div>
+          <div class="control">
+            <h2 class="label">2. What do you want it to do? <span class="muted">(pick any, models that do more of them come first)</span></h2>
+            <div class="chips" id="tagFilters"></div>
+            <button class="linkish small" id="clearFilters" type="button" hidden>Clear these choices</button>
+          </div>
+          <div class="control">
+            <h2 class="label">3. Or search every open model on Hugging Face</h2>
+            <form id="searchForm" class="search" role="search">
+              <input id="q" type="search" placeholder="Try: llama, coder, mistral, vision…" aria-label="Search models" autocomplete="off">
+              <button type="submit" class="btn primary">Search</button>
+            </form>
+          </div>
+        </section>
+
+        <nav class="tabs" role="tablist">
+          <button role="tab" id="tabStarter" aria-selected="true" class="tab">⭐ Starter picks</button>
+          <button role="tab" id="tabSearch" aria-selected="false" class="tab">🔍 Search results</button>
+          <label class="sortby small">Sort by <select id="sortBy" aria-label="Sort models by"></select></label>
+          <label class="toggle"><input type="checkbox" id="hideTooBig"> Hide models too big for my computer</label>
+        </nav>
+        <p id="status" class="status" aria-live="polite"></p>
+        <section id="grid" class="grid" aria-live="polite"></section>
+        <footer class="foot small muted">Company logos belong to their owners and are shown only to identify who made each model. Logo artwork from the open-source Lobe Icons set (MIT). Model data comes from the Hugging Face Hub. Each model has its own licence; check the model page before using it for work. Memory and size numbers are estimates.</footer>
+      </section>
+
+      <!-- MY MODELS -->
+      <section class="view" id="view-mine" hidden>
+        <header class="hero">
+          <h1>My models</h1>
+          <p class="lead">Models saved on this computer. These work with no internet. Press ☆ to pin your favourites to the top.</p>
+        </header>
+        <div class="minebar" id="mineSortWrap" hidden><label class="sortby small">Sort by <select id="mineSort" aria-label="Sort my models by"></select></label></div>
+        <div id="dlList"></div>
+        <section id="mineGrid" class="grid"></section>
+        <p class="small muted"><button class="linkish" id="openFolder">Open the models folder</button> to see the files.</p>
+      </section>
+
+      <!-- ONLINE MODELS -->
+      <section class="view" id="view-online" hidden>
+        <header class="hero">
+          <h1>Online models</h1>
+          <p class="lead">Free AI assistants that run on each company's own servers. Press <strong>Open</strong> to use one in its own window and sign in with your free account there.
+            They need the internet, and what you type goes to that company. Press ☆ to pin your favourites to the top.</p>
+        </header>
+        <section id="onlineGrid" class="grid"></section>
+        <p class="small muted">These open each company's official website. Your sign-ins are remembered on this computer, separately for each service. Names and logos belong to their owners.</p>
+      </section>
+
+      <!-- CHAT -->
+      <section class="view chatview" id="view-chat" hidden>
+        <div class="chatbar">
+          <label class="small" for="chatModel">Model</label>
+          <select id="chatModel"></select>
+          <button class="btn sm" id="newChat">New chat</button>
+        </div>
+        <div class="messages" id="messages" aria-live="polite"></div>
+        <form class="composer" id="composer">
+          <textarea id="prompt" rows="1" placeholder="Message your model…  (Enter to send, Shift+Enter for a new line)" aria-label="Message"></textarea>
+          <button class="btn primary" id="sendBtn" type="submit">Send</button>
+          <button class="btn" id="stopBtn" type="button" hidden>Stop</button>
+        </form>
+      </section>
+
+      <!-- VOICE -->
+      <section class="view" id="view-voice" hidden>
+        <header class="hero">
+          <h1>Voice mode</h1>
+          <p class="lead">Say a wake phrase like <strong>"Hey Jarvis"</strong>, then your question. It answers out loud in a natural English voice. Listening always happens on this computer, and answers do too unless a phrase uses Claude (online).</p>
+        </header>
+
+        <div class="voicestage">
+          <button class="orb" id="orb" aria-pressed="false" aria-label="Start listening">
+            <span class="orb-ring"></span><span class="orb-icon">🎙️</span>
+          </button>
+          <div>
+            <p class="orb-state" id="orbState">Not listening</p>
+            <p class="small muted" id="orbHint">Press the microphone to start. Say one of your wake phrases, then ask your question.</p>
+            <p class="heard small" id="heard"></p>
+          </div>
+        </div>
+
+        <div class="way">
+          <div class="row"><h3>Your wake phrases</h3><button class="btn sm" data-goto="settings">⚙️ Change in Settings</button></div>
+          <div id="phraseSummary" class="psum"></div>
+        </div>
+
+        <div class="transcript" id="voiceLog"></div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="view" id="view-settings" hidden>
+        <header class="hero">
+          <h1>Settings</h1>
+          <p class="lead">Choose how your assistant sounds, set up voice mode, add Claude, and manage downloads.</p>
+        </header>
+
+        <section class="sblock">
+          <h2>Voice</h2>
+          <p class="muted">Pick the voice that reads answers out loud. Press <strong>▶ Preview</strong> to hear each one. All voices speak English and run on this computer.</p>
+          <div class="way" id="ttsBox"></div>
+          <div class="voicegrid" id="voiceGrid"></div>
+          <div class="way">
+            <div class="srow"><label for="voiceSpeed"><strong>Speaking speed</strong></label>
+              <input type="range" id="voiceSpeed" min="0.8" max="1.3" step="0.05"><span id="voiceSpeedVal" class="small muted"></span></div>
+            <label class="toggle inline"><input type="checkbox" id="speakReplies"> Read answers out loud in Voice mode</label>
+            <label class="toggle inline"><input type="checkbox" id="speakChat"> Also read answers out loud in Chat</label>
+            <div class="srow"><label for="voiceName" class="small">If natural voices aren't downloaded, use this built-in voice</label><select id="voiceName"></select></div>
+          </div>
+        </section>
+
+        <section class="sblock">
+          <h2>Voice mode</h2>
+          <div class="way" id="voicePackBox"></div>
+          <div class="way">
+            <h3>Wake phrases</h3>
+            <p class="small muted">Pick the words that wake each model, and the voice that answers. Short, distinctive phrases of two or three words work best.
+              Press <strong>Test</strong> and say the phrase to check the app hears it.</p>
+            <div id="phrases"></div>
+            <button class="btn sm" id="addPhrase">+ Add a wake phrase</button>
+          </div>
+          <div class="way">
+            <div class="srow"><label class="small" for="followUp">After an answer, keep listening for a follow-up question for</label>
+              <select id="followUp"><option value="0">Off</option><option value="5">5 seconds</option><option value="8">8 seconds</option><option value="15">15 seconds</option></select></div>
+          </div>
+        </section>
+
+        <section class="sblock">
+          <h2>Optimal mode</h2>
+          <div class="way" id="autoBox"></div>
+        </section>
+
+        <section class="sblock">
+          <h2>Claude on your Pro plan</h2>
+          <div class="way" id="claudeApiBox"></div>
+        </section>
+
+        <section class="sblock">
+          <h2>Let the Claude desktop app use your models</h2>
+          <div class="way" id="claudeBox"></div>
+        </section>
+
+        <section class="sblock">
+          <h2>Downloads</h2>
+          <div class="way">
+            <label class="small" for="hfToken"><strong>Hugging Face token</strong> <span class="muted">(optional, only for models that need a login)</span></label>
+            <div class="srow"><input id="hfToken" type="password" placeholder="hf_…" autocomplete="off"><button class="btn sm" id="saveToken">Save</button></div>
+            <p class="small muted">Some models ask you to accept a licence on Hugging Face first. Create a free "read" token at huggingface.co/settings/tokens and paste it here.</p>
+            <p class="small"><button class="linkish" id="openFolder2">Open the folder where models are saved</button></p>
+          </div>
+        </section>
+
+        <section class="sblock">
+          <h2>Updates</h2>
+          <div class="way" id="updateBox"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="detail" aria-labelledby="dTitle">
+    <div class="dhead">
+      <div>
+        <h2 id="dTitle"></h2>
+        <p id="dSub" class="muted"></p>
+      </div>
+      <button class="icon" id="dClose" aria-label="Close">✕</button>
+    </div>
+    <div id="dBody"></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+
+  <script src="models.js"></script>
+  <script src="showcase-data.js"></script>
+  <script src="vendor/vosk.js"></script>
+  <script src="speaker.js"></script>
+  <script src="app.js"></script>
+  <script src="chat.js"></script>
+  <script src="settings.js"></script>
+  <script src="voice.js"></script>
+</body>
+</html>

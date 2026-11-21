@@ -1,0 +1,30 @@
+# Builds the Windows installer and publishes it as a GitHub release.
+# To release: change "version" in package.json (for example to 0.8.0), then run
+#   git commit -am "Version 0.8.0" && git tag v0.8.0 && git push && git push --tags
+# The app's "Check for updates" button then finds the new version.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          npx electron-builder --win --x64 --publish always
+          -c.publish.provider=github
+          -c.publish.owner=${{ github.repository_owner }}
+          -c.publish.repo=${{ github.event.repository.name }}
+          -c.publish.releaseType=release
