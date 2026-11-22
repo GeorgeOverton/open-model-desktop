@@ -26,6 +26,17 @@
       <!-- FIND -->
       <section class="view" id="view-find">
         <header class="hero intro">
+          <div class="infotip">
+            <button type="button" aria-label="What the words mean" aria-describedby="wordsTip">i</button>
+            <div class="tipbox" role="tooltip" id="wordsTip">
+              <h3>New to this? What the words mean</h3>
+              <p class="small"><strong>"4B"</strong> means 4 billion parameters. Bigger is usually smarter but needs more memory and runs slower.
+                <strong>"Q4_K_M"</strong> is a compressed version of the model. It's the recommended balance of size and quality for most people, and the app picks it for you.</p>
+              <p class="small"><strong>Memory:</strong> we've guessed your computer's memory below. On a Mac with Apple Silicon (M1 to M4) that's all you need.
+                On a PC with an NVIDIA or AMD graphics card, models run fastest when they fit in the card's memory, but they still work using normal memory (slower).</p>
+              <p class="small"><strong>Greyed out</strong> models are too big for the memory you picked, so they're listed last.</p>
+            </div>
+          </div>
           <div>
             <div class="eyebrow">Free AI you can run at home</div>
             <h1>Find a model that fits what you do and the computer you have.</h1>
@@ -39,13 +50,6 @@
             <div class="lrow"><span class="demand lv4"><b><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></b>Very heavy</span><span>32 GB or a 16 GB+ graphics card</span></div>
           </div>
         </header>
-        <details class="howto">
-          <summary>New to this? What the words mean (1 minute read)</summary>
-          <p class="small"><strong>"4B"</strong> means 4 billion parameters. Bigger is usually smarter but needs more memory and runs slower.
-            <strong>"Q4_K_M"</strong> is a compressed version of the model. It's the recommended balance of size and quality for most people, and the app picks it for you.</p>
-          <p class="small"><strong>Memory:</strong> we've guessed your computer's memory below. On a Mac with Apple Silicon (M1 to M4) that's all you need.
-            On a PC with an NVIDIA or AMD graphics card, models run fastest when they fit in the card's memory, but they still work using normal memory (slower).</p>
-        </details>
 
         <section class="controls" aria-label="Filters">
           <div class="control">
@@ -119,9 +123,11 @@
         <div class="messages" id="messages" aria-live="polite"></div>
         <form class="composer" id="composer">
           <textarea id="prompt" rows="1" placeholder="Message your model…  (Enter to send, Shift+Enter for a new line)" aria-label="Message"></textarea>
+          <button class="btn" id="micBtn" type="button" aria-pressed="false" title="Talk instead of typing" aria-label="Talk instead of typing">🎤</button>
           <button class="btn primary" id="sendBtn" type="submit">Send</button>
           <button class="btn" id="stopBtn" type="button" hidden>Stop</button>
         </form>
+        <div class="micstate" id="micState" aria-live="polite"></div>
         </div>
       </section>
 
@@ -144,10 +150,12 @@
         </div>
 
         <div class="way">
-          <div class="row"><h3>Your wake phrases</h3><button class="btn sm" data-goto="settings">⚙️ Change in Settings</button></div>
+          <div class="row"><button class="collapser" id="phrasesToggle" type="button" aria-expanded="true" aria-controls="phraseSummary"><span class="chev" aria-hidden="true">▾</span> <h3>Your wake phrases</h3> <span class="small muted" id="phraseCount"></span></button>
+            <button class="btn sm" data-goto="settings">⚙️ Change in Settings</button></div>
           <div id="phraseSummary" class="psum"></div>
         </div>
 
+        <div class="row vlogbar" id="voiceLogBar" hidden><h3>This conversation</h3><button class="btn sm" id="voiceClear" type="button" title="Clear the screen and start a fresh conversation">🧹 Clear</button></div>
         <div class="transcript" id="voiceLog"></div>
       </section>
 
@@ -185,6 +193,7 @@
           <div class="way">
             <div class="srow"><label class="small" for="followUp">After an answer, keep listening for a follow-up question for</label>
               <select id="followUp"><option value="0">Off</option><option value="5">5 seconds</option><option value="8">8 seconds</option><option value="15">15 seconds</option></select></div>
+            <label class="toggle inline"><input type="checkbox" id="micAllowed"> Let the app use my microphone (it asks the first time; untick to turn it off)</label>
           </div>
         </section>
 
@@ -204,13 +213,27 @@
         </section>
 
         <section class="sblock">
+          <h2>Running models</h2>
+          <div class="way">
+            <label class="toggle inline"><input type="checkbox" id="multiModels"> Keep more than one model running at once, when there's enough memory</label>
+            <p class="small muted">Then Chat and each wake phrase can use a different model without waiting for it to load again. If a new model doesn't fit,
+              the app stops the one you used longest ago (never one that's answering) and tells you. Untick this to run only one model at a time, which is gentler on smaller computers.</p>
+          </div>
+        </section>
+
+        <section class="sblock">
           <h2>Saved chats</h2>
           <div class="way">
             <label class="toggle inline"><input type="checkbox" id="saveChats"> Save my chats on this computer</label>
             <label class="toggle inline"><input type="checkbox" id="makeFiles"> Let models make real files (code, documents, lists, web pages, spreadsheets)</label>
-            <p class="small muted">When you ask any model for a file, it's saved in <b id="filesWhere">Documents › Open Model Desktop</b>, in a folder for each chat. Deleting a chat keeps its files.
+            <div class="subopts">
+              <label class="toggle inline"><input type="checkbox" id="filesAutoSave"> Save files without asking me first</label>
+              <label class="toggle inline"><input type="checkbox" id="filesAutoRun"> Open programs and scripts (like .py, .bat, .ps1) without asking me first</label>
+            </div>
+            <p class="small muted">When you ask any model for a file, the app asks before saving it in <b id="filesWhere">Documents › Open Model Desktop</b> (a folder for each chat),
+              and asks again before opening one that would run on your computer. Pressing "Always" on a file turns on the boxes above; untick them to be asked again. Deleting a chat keeps its files.
               <button class="linkish" id="openFilesFolder">Open the files folder</button></p>
-            <p class="small muted">Every conversation in Chat is kept in a folder on this computer, so you can open it again from the list on the left of Chat. Nothing is uploaded. Voice mode conversations aren't saved.</p>
+            <p class="small muted">Every conversation in Chat is kept in a folder on this computer, so you can open it again from the list on the left of Chat. Nothing is uploaded. Voice mode conversations are saved too (they start with 🎙️).</p>
             <p class="small"><button class="linkish" id="openChatsFolder">Open the folder where chats are saved</button>
               · <span id="delAllWrap"><button class="linkish danger" id="delAllChats">Delete all saved chats</button></span></p>
           </div>
@@ -223,6 +246,7 @@
             <div class="srow"><input id="hfToken" type="password" placeholder="hf_…" autocomplete="off"><button class="btn sm" id="saveToken">Save</button></div>
             <p class="small muted">Some models ask you to accept a licence on Hugging Face first. Create a free "read" token at huggingface.co/settings/tokens and paste it here.</p>
             <p class="small"><button class="linkish" id="openFolder2">Open the folder where models are saved</button></p>
+            <p class="small muted">Uninstalling the app (Windows Settings → Apps, or "Uninstall Open Model Desktop" in the Start menu) also deletes every downloaded model, the voices and your saved chats, so no space is left used. Files the models made in Documents are kept. Updating the app keeps everything.</p>
           </div>
         </section>
 

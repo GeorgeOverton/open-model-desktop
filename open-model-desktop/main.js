@@ -53,23 +53,32 @@ const DEFAULT_SETTINGS = {
   followUpSeconds: 8,
   claudeModel: DEFAULT_CLAUDE_MODEL,
   saveChats: true,
-  makeFiles: true,         // models can make files in Chat (Settings → Saved chats)         // keep every Chat conversation in userData/chats (Settings → Saved chats)
+  multiModels: true,       // keep several models running at once when there's enough memory (Settings → Running models)
+  modelNames: {},          // your own names for models: { "<file>": "Name" }
+  makeFiles: true,         // models can make files in Chat and Voice mode (Settings → Saved chats)
+  filesAutoSave: false,    // false: ask before saving each file the model makes
+  filesAutoRun: false,     // false: ask before opening a file that runs code (.py, .bat, .ps1 …)
+  micAllowed: false,       // the app asks before it first uses the microphone (Settings → Voice mode)
   updateRepo: "",          // GitHub repository with releases, as "owner/name" (see Settings → Updates)
   wakePhrases: [
     { id: "jarvis", phrase: "Hey Jarvis", aliases: [], model: "", personality: "" },
   ],
 };
 async function getSettings() {
-  return { ...DEFAULT_SETTINGS, ...(await readJSON(settingsFile(), {})) };
+  const s = { ...DEFAULT_SETTINGS, ...(await readJSON(settingsFile(), {})) };
+  multiOn = s.multiModels !== false;
+  return s;
 }
 
 // Model files are stored as models/<owner>__<repo>/<file>.gguf, and models.json remembers
 // the friendly name and tags so "My models" can show them without the internet.
+// Models you've renamed show your name everywhere (defaultName keeps the original).
 async function listModels() {
   const manifest = await readJSON(manifestFile(), []);
+  const names = (await getSettings()).modelNames || {};
   const out = [];
   for (const m of manifest) {
-    try { const st = await fsp.stat(path.join(modelsDir(), m.file)); out.push({ ...m, size: m.size || st.size, added: m.added || st.mtimeMs }); } catch {}
+    try { const st = await fsp.stat(path.join(modelsDir(), m.file)); out.push({ ...m, defaultName: m.name, name: names[m.file] || m.name, size: m.size || st.size, added: m.added || st.mtimeMs }); } catch {}
   }
   return out;
 }
@@ -134,6 +143,8 @@ function notify(title, body) {
 }
 async function modelName(file) {
   if (!file) return "";
+  const own = ((await getSettings()).modelNames || {})[file];
+  if (own) return own;
   if (file === "@claude") return "Claude";
   const m = (await readJSON(manifestFile(), [])).find((x) => x.file === file);
   return m?.name || path.basename(file, ".gguf");
@@ -142,13 +153,13 @@ let traySt = { state: "idle", name: "" };
 function updateTray() {
   if (!tray) return;
   const { state, name } = traySt;
-  const label = state === "ready" ? `● Running: ${name}` : state === "loading" ? `Starting ${name}…` : "No model running";
+  const label = state === "ready" ? `● Running: ${name.length > 60 ? name.slice(0, 57) + "…" : name}` : state === "loading" ? `Starting ${name}…` : "No model running";
   tray.setToolTip(`Open Model Desktop\n${label}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Open Open Model Desktop", click: showWindow },
     { type: "separator" },
     { label, enabled: false },
-    { label: state === "loading" ? "Cancel" : "Stop model", enabled: state !== "idle", click: () => engine.cancel() },
+    { label: state === "loading" ? "Cancel" : pool.length > 1 ? "Stop all models" : "Stop model", enabled: state !== "idle", click: () => stopAllModels() },
     { type: "separator" },
     { label: "Quit", click: () => { quitting = true; app.quit(); } },
   ]));
@@ -161,10 +172,10 @@ function createTray() {
   updateTray();
 }
 async function onEngineStatus(d) {
-  const prev = traySt.state;
-  traySt = { state: d.state, name: d.state === "idle" ? "" : await modelName(d.file) };
+  const run = runningList();
+  traySt = { state: run.some((r) => r.state === "loading") ? "loading" : run.length ? "ready" : "idle", name: (await Promise.all(run.map((r) => modelName(r.file)))).join(", ") };
   updateTray();
-  if (d.state === "ready" && prev !== "ready") notify("Model running", `${traySt.name} is running and ready to chat.`);
+  if (d.state === "ready" && d.file && !d.online) notify("Model running", `${await modelName(d.file)} is running and ready to chat.`);
 }
 
 app.whenReady().then(() => {
@@ -179,8 +190,11 @@ app.whenReady().then(() => {
     if (!file.startsWith(uiDir)) return new Response("Not found", { status: 404 });
     return serveFile(file);
   });
-  // The microphone is only used by Voice mode, and only after you press "Start listening".
-  session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => cb(permission === "media" || permission === "clipboard-sanitized-write"));
+  // The microphone is only used after you say yes to the app's question (Settings → Voice mode turns it off again).
+  session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => {
+    if (permission === "media") return getSettings().then((s) => cb(!!s.micAllowed)).catch(() => cb(false));
+    cb(permission === "clipboard-sanitized-write");
+  });
   createWindow();
   try { createTray(); } catch (err) { console.error("Tray unavailable:", err.message); }
   startBridge().catch((err) => console.error("Claude app link unavailable:", err.message));
@@ -196,6 +210,10 @@ ipcMain.handle("settings:get", async () => forWindow(await getSettings()));
 ipcMain.handle("settings:set", async (_e, { claudeKey, ...patch }) => {
   const next = { ...(await getSettings()), ...patch };
   await writeJSON(settingsFile(), next);
+  multiOn = next.multiModels !== false;
+  // Back to one model at a time: keep only the one used most recently.
+  if (patch.multiModels === false) { const keep = latestEngine(); for (const e of [...pool]) if (e !== keep) await e.cancel(); if (keep && claudeOn) claudeStatus(false); }
+  if (patch.modelNames) onEngineStatus({});
   return forWindow(next);
 });
 ipcMain.handle("sys:info", () => ({
@@ -362,7 +380,7 @@ ipcMain.handle("dl:active", () => [...downloads.keys()]);
 
 ipcMain.handle("models:list", () => listModels());
 ipcMain.handle("models:delete", async (_e, file) => {
-  if (engine.file === file) await engine.unload();
+  await engineOf(file)?.cancel();
   const manifest = await readJSON(manifestFile(), []);
   const m = manifest.find((x) => x.file === file);
   if (!m) return;
@@ -439,50 +457,110 @@ app.on("will-quit", () => { tts.proc?.kill(); });
 // ---------- Local model runtime ----------
 // Models run in a separate background process (engine.mjs). If a model file is broken or
 // unsupported and the runtime crashes, only that process dies and the app keeps working.
-const engine = {
-  proc: null, file: null, seq: 0, pending: new Map(),
-  start() {
-    if (this.proc) return this.proc;
-    const proc = utilityProcess.fork(path.join(here, "engine.mjs"), [], { serviceName: "Model runtime", stdio: "inherit" });
-    proc.on("message", (m) => {
-      if (m.event === "chunk") return send("chat:chunk", m.data);
-      if (m.event === "status") {
-        this.file = m.data.state === "ready" ? m.data.file : m.data.state === "idle" ? null : this.file;
-        this.status = m.data;
-        return pushStatus(m.data);
-      }
-      const p = this.pending.get(m.id); if (!p) return;
-      this.pending.delete(m.id);
-      m.error ? p.reject(new Error(m.error)) : p.resolve(m.result);
-    });
-    proc.on("exit", (code) => {
-      if (this.proc !== proc) return;
-      this.proc = null; this.file = null;
-      for (const p of this.pending.values()) p.reject(new Error("The model stopped unexpectedly. This file may be broken or not supported yet. Try a different model or version."));
-      this.pending.clear();
-      this.status = { state: "idle" }; pushStatus(this.status);
-    });
-    this.proc = proc;
-    return proc;
-  },
-  call(op, args) {
-    const proc = this.start();
-    const id = ++this.seq;
-    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); proc.postMessage({ id, op, args }); });
-  },
-  status: { state: "idle" },
-  async unload() { if (this.proc) await this.call("unload"); },
-  // Stop the running model, or cancel one that's still starting up.
-  async cancel() {
-    if (!this.proc) return;
-    if (this.status.state === "loading") {
-      const proc = this.proc; this.proc = null; this.file = null;
-      for (const p of this.pending.values()) p.reject(new Error("Cancelled."));
-      this.pending.clear();
-      proc.kill();
-      this.status = { state: "idle" }; pushStatus(this.status);
-    } else await this.unload();
-  },
+// Several models can run at once (each in its own process) when there's enough memory: Settings → Running models.
+const MAX_MODELS = 4;
+const pool = [];                 // running engines, one per model file
+let multiOn = true;              // settings.multiModels, kept here so status updates can read it straight away
+function makeEngine(file) {
+  const e = {
+    proc: null, file: null, want: file, seq: 0, pending: new Map(), used: Date.now(), busy: 0, status: { state: "idle" },
+    start() {
+      if (this.proc) return this.proc;
+      const proc = utilityProcess.fork(path.join(here, "engine.mjs"), [], { serviceName: "Model runtime", stdio: "inherit" });
+      proc.on("message", (m) => {
+        if (m.event === "chunk") return send("chat:chunk", m.data);
+        if (m.event === "status") {
+          this.file = m.data.state === "ready" ? m.data.file : m.data.state === "idle" ? null : this.file;
+          this.status = m.data;
+          if (m.data.state === "idle" && !this.pending.size) drop(this);   // (loading starts with an "idle" while it clears the old model)
+          return pushStatus(m.data);
+        }
+        const p = this.pending.get(m.id); if (!p) return;
+        this.pending.delete(m.id);
+        m.error ? p.reject(new Error(m.error)) : p.resolve(m.result);
+      });
+      proc.on("exit", () => {
+        if (this.proc !== proc) return;
+        this.proc = null; this.file = null;
+        for (const p of this.pending.values()) p.reject(new Error("The model stopped unexpectedly. This file may be broken or not supported yet. Try a different model or version."));
+        this.pending.clear();
+        drop(this);
+        this.status = { state: "idle", file: this.want }; pushStatus(this.status);
+      });
+      this.proc = proc;
+      return proc;
+    },
+    call(op, args) {
+      const proc = this.start();
+      const id = ++this.seq;
+      this.used = Date.now();
+      return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); proc.postMessage({ id, op, args }); });
+    },
+    async unload() { if (this.proc) { await this.call("unload"); this.proc?.kill(); this.proc = null; } drop(this); this.status = { state: "idle", file: this.want }; pushStatus(this.status); },
+    // Stop the running model, or cancel one that's still starting up.
+    async cancel() {
+      if (!this.proc) return drop(this);
+      if (this.status.state === "loading") {
+        const proc = this.proc; this.proc = null; this.file = null;
+        for (const p of this.pending.values()) p.reject(new Error("Cancelled."));
+        this.pending.clear();
+        proc.kill();
+        drop(this);
+        this.status = { state: "idle", file: this.want }; pushStatus(this.status);
+      } else await this.unload();
+    },
+  };
+  return e;
+}
+function drop(e) { const k = pool.indexOf(e); if (k >= 0) pool.splice(k, 1); }
+const engineOf = (file) => pool.find((e) => e.want === file);
+const latestEngine = () => [...pool].sort((a, b) => b.used - a.used)[0] || null;
+async function stopAllModels() { for (const e of [...pool]) await e.cancel(); }
+async function modelSizeGB(file) {
+  try { return (await fsp.stat(path.join(modelsDir(), file))).size / 1e9; } catch { return 0; }
+}
+// The engine for a model: the one already running it, or a new one. Makes room first by stopping the
+// models you used longest ago (never one that's answering), and says so.
+async function engineFor(file) {
+  let e = engineOf(file);
+  if (e) { e.used = Date.now(); return e; }
+  multiOn = (await getSettings()).multiModels !== false;
+  const others = pool.filter((x) => x.proc).sort((a, b) => a.used - b.used);
+  if (!multiOn) for (const x of others) await x.cancel();
+  else if (others.length) {
+    const need = (await modelSizeGB(file)) * 1.2 + 0.8;
+    let free = os.freemem() / 1e9;
+    for (const x of others) {
+      if (free >= need && pool.length < MAX_MODELS) break;
+      if (x.busy) continue;
+      const gone = x.want, size = await modelSizeGB(gone);
+      await x.cancel();
+      free += size * 1.1;
+      send("chat:notice", { text: `Stopped ${await modelName(gone)} to make room for ${await modelName(file)}, because there isn't enough memory to run both.` });
+    }
+  }
+  e = makeEngine(file);
+  pool.push(e);
+  return e;
+}
+// Run something on a model's engine. If loading ran out of memory while other models were running, stop them and try once more.
+async function onModel(file, op, args) {
+  const e = await engineFor(file);
+  e.busy++;
+  try { return await e.call(op, args); }
+  catch (err) {
+    if (/ran out of memory/i.test(err.message) && pool.some((x) => x !== e && x.proc && !x.busy)) {
+      for (const x of pool.filter((x) => x !== e && !x.busy)) await x.cancel();
+      send("chat:notice", { text: `Stopped the other models to make room for ${await modelName(file)}.` });
+      return (await engineFor(file)).call(op, args);
+    }
+    throw err;
+  } finally { e.busy--; }
+}
+const runningList = () => {
+  const l = pool.filter((e) => e.status.state !== "idle").map((e) => ({ file: e.status.file || e.want, state: e.status.state, progress: e.status.progress, gpu: e.status.gpu || false }));
+  if (claudeOn) l.push(claudeReady());
+  return l;
 };
 const modelPath = (file) => {
   const full = path.join(modelsDir(), file);
@@ -495,14 +573,13 @@ const modelPath = (file) => {
 let claudeOn = false, claudeLimit = "";
 const claudeReady = () => ({ state: "ready", file: CLAUDE_FILE, online: true, ...(claudeLimit ? { limit: claudeLimit } : {}) });
 function pushStatus(d) {
-  if (claudeOn && d.state === "idle") return;      // the local model stopping doesn't stop Claude
-  if (d.state !== "idle") claudeOn = false;        // a local model starting replaces Claude
-  onEngineStatus(d); send("chat:status", d);
+  if (d.state !== "idle" && !multiOn) claudeOn = false;   // one model at a time: a local model starting replaces Claude
+  onEngineStatus(d); send("chat:status", { ...d, running: runningList() });
 }
 function claudeStatus(on) {
   claudeOn = on;
-  const d = on ? claudeReady() : { state: "idle" };
-  onEngineStatus(d); send("chat:status", d);
+  const d = on ? claudeReady() : { state: "idle", file: CLAUDE_FILE, online: true };
+  onEngineStatus(d); send("chat:status", { ...d, running: runningList() });
 }
 const claude = createClaude({
   getModel: async () => (await getSettings()).claudeModel ?? DEFAULT_CLAUDE_MODEL,
@@ -511,7 +588,7 @@ const claude = createClaude({
 });
 async function useClaude() {
   if (claudeOn) return;
-  if (engine.proc) await engine.cancel();          // free the memory a local model was using
+  if (!multiOn) await stopAllModels();             // one model at a time: free the memory a local model was using
   claudeStatus(true);
 }
 async function claudeSend(args) {
@@ -630,22 +707,28 @@ ipcMain.handle("auto:preview", async (_e, tierId) => {
 ipcMain.handle("chat:load", async (_e, file) => {
   if (file === CLAUDE_FILE) {
     send("chat:status", { state: "loading", file: CLAUDE_FILE, online: true });
-    try { await requireClaude({ fallback: true }); } catch (err) { send("chat:status", claudeOn ? claudeReady() : { ...engine.status, file: engine.file }); throw err; }
+    try { await requireClaude({ fallback: true }); } catch (err) { send("chat:status", { ...(claudeOn ? claudeReady() : { state: "idle", file: CLAUDE_FILE, online: true }), running: runningList() }); throw err; }
     await useClaude();
     return { file };
   }
-  if (claudeOn) claudeStatus(false);
-  return engine.call("load", { file, path: modelPath(file) });
+  if (claudeOn && !multiOn) claudeStatus(false);
+  return onModel(file, "load", { file, path: modelPath(file) });
 });
-ipcMain.handle("chat:current", () => (claudeOn ? claudeReady() : { file: engine.file, ...engine.status }));
-ipcMain.handle("chat:unload", () => { if (claudeOn) { claude.stop(); claudeStatus(false); return; } return engine.cancel(); });
-ipcMain.handle("chat:reset", (_e, systemPrompt) => { claude.reset(systemPrompt ?? null); return engine.proc && engine.call("reset", { systemPrompt: systemPrompt ?? null }); });
-ipcMain.handle("chat:stop", () => { claude.stop(); engine.proc?.postMessage({ op: "stop" }); });
+ipcMain.handle("chat:current", () => { const e = latestEngine(); return { ...(e ? { ...e.status, file: e.status.file || e.want } : claudeOn ? claudeReady() : { state: "idle" }), running: runningList() }; });
+// Stop one model (file), or every model.
+ipcMain.handle("chat:unload", async (_e, file) => {
+  if (file === CLAUDE_FILE || (!file && claudeOn)) { claude.stop(); claudeStatus(false); if (file) return; }
+  if (file) return engineOf(file)?.cancel();
+  return stopAllModels();
+});
+ipcMain.handle("chat:reset", (_e, systemPrompt) => { claude.reset(systemPrompt ?? null); return Promise.all(pool.filter((e) => e.proc).map((e) => e.call("reset", { systemPrompt: systemPrompt ?? null }))); });
+ipcMain.handle("chat:stop", () => { claude.stop(); for (const e of pool) e.proc?.postMessage({ op: "stop" }); });
 // Added to the instructions in Chat, so models put files they make where the app can find them.
 // Small models follow an example better than a rule, so there is one. The app is forgiving when they don't (see renderer/files.js).
 const FILES_PROMPT = "When the user asks you to create, write or make a file (code, a script, a document, a list, a letter, a web page, a spreadsheet as CSV and so on), " +
   "the app saves it as a real file for them. Write a line 'File: name.ext' with a short sensible file name, then put the whole file in a code block straight after it, " +
   "with nothing left out. Use one code block per file. For example:\nFile: hello.py\n```python\nprint(\"Hello\")\n```\n" +
+  "Start code files with a short comment saying what the file does and how to run it. After the code block, say in one or two sentences what the file is and how to use or run it. " +
   "Don't tell the user to copy and paste it, because the app saves it for them. For everything else, answer normally.";
 ipcMain.handle("chat:send", async (_e, { text, file, systemPrompt, turnId, convId = null, history = null, claudeSession = null, fast = false, files = false }) => {
   if (files) systemPrompt = (systemPrompt || (file === CLAUDE_FILE ? CHAT_PROMPT : "")) + (systemPrompt || file === CLAUDE_FILE ? " " : "") + FILES_PROMPT;
@@ -661,8 +744,10 @@ ipcMain.handle("chat:send", async (_e, { text, file, systemPrompt, turnId, convI
     send("chat:route", { turnId, ...routed });
     file = routed.file;
   }
-  if (claudeOn) claudeStatus(false);
-  const r = await engine.call("send", { text, file, path: file ? modelPath(file) : null, systemPrompt: systemPrompt ?? null, turnId, convId, history, fast });
+  if (claudeOn && !multiOn) claudeStatus(false);
+  file ||= latestEngine()?.want;
+  if (!file) throw new Error("Pick a model first.");
+  const r = await onModel(file, "send", { text, file, path: modelPath(file), systemPrompt: systemPrompt ?? null, turnId, convId, history, fast });
   return routed ? { ...r, routed } : r;
 });
 // ---------- Updates from GitHub releases ----------
@@ -720,7 +805,7 @@ app.whenReady().then(() => setTimeout(async () => {
   try { const st = await checkForUpdates(); if (st.state === "available") notify("Update available", `Version ${st.latest} of Open Model Desktop is ready to download. Open Settings → Updates.`); } catch {}
 }, 15000));
 
-app.on("will-quit", () => { engine.proc?.kill(); router.proc?.kill(); try { fs.unlinkSync(bridgeFile()); } catch {} });
+app.on("will-quit", () => { for (const e of pool) e.proc?.kill(); router.proc?.kill(); try { fs.unlinkSync(bridgeFile()); } catch {} });
 
 // ---------- Use your models from the Claude app ----------
 // The Claude app (Claude Desktop) starts mcp-server.mjs, which talks to this small server. It only
@@ -741,7 +826,7 @@ async function pickModel(want) {
     if (!hit) throw Object.assign(new Error(`No downloaded model matches "${want}". Downloaded: ${all.map((m) => m.name).join(", ")}.`), { status: 404 });
     return hit;
   }
-  return all.find((m) => m.file === engine.file) || all[0];
+  return all.find((m) => m.file === latestEngine()?.file) || all[0];
 }
 const readBody = (req) => new Promise((resolve, reject) => {
   let b = ""; req.setEncoding("utf8");
@@ -761,7 +846,7 @@ async function startBridge() {
       if (req.method === "GET" && route === "/ping") return out(200, { ok: true });
       if (req.method === "GET" && route === "/models") {
         const models = (await listModels()).map((m) => ({ name: m.name, file: m.file, quant: m.quant || "", sizeGB: +((m.size || 0) / 1024 ** 3).toFixed(1),
-          running: m.file === engine.file, chat: !(m.tags || []).includes("embeddings") }));
+          running: !!engineOf(m.file)?.file, chat: !(m.tags || []).includes("embeddings") }));
         return out(200, { models });
       }
       if (req.method === "POST" && route === "/ask") {
@@ -769,7 +854,7 @@ async function startBridge() {
         if (!b.prompt) return out(400, { error: "Please give a prompt." });
         const m = await pickModel(b.model);
         send("claude:activity", { kind: "ask", model: m.name, prompt: String(b.prompt).slice(0, 200) });
-        const r = await engine.call("ask", { text: String(b.prompt), file: m.file, path: modelPath(m.file), systemPrompt: b.system || null,
+        const r = await onModel(m.file, "ask", { text: String(b.prompt), file: m.file, path: modelPath(m.file), systemPrompt: b.system || null,
           maxTokens: Math.min(4096, Math.max(16, +b.maxTokens || 2048)) });
         send("claude:activity", { kind: "done", model: m.name });
         return out(200, { text: r.text, model: m.name });

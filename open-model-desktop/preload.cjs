@@ -61,11 +61,11 @@ contextBridge.exposeInMainWorld("desktop", {
   chat: {
     load: (f) => ipcRenderer.invoke("chat:load", f),
     current: () => ipcRenderer.invoke("chat:current"),
-    unload: () => ipcRenderer.invoke("chat:unload"),
+    unload: (file) => ipcRenderer.invoke("chat:unload", file),
     reset: (sp) => ipcRenderer.invoke("chat:reset", sp),
     stop: () => ipcRenderer.invoke("chat:stop"),
     send: (o) => ipcRenderer.invoke("chat:send", o),
-    onChunk: on("chat:chunk"), onStatus: on("chat:status"), onRoute: on("chat:route"),
+    onChunk: on("chat:chunk"), onStatus: on("chat:status"), onRoute: on("chat:route"), onNotice: on("chat:notice"),
   },
   tts: {
     status: () => ipcRenderer.invoke("tts:status"),

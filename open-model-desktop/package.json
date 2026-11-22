@@ -1,7 +1,7 @@
 {
   "name": "open-model-desktop",
   "productName": "Open Model Desktop",
-  "version": "0.11.0",
+  "version": "0.13.0",
   "description": "Find, download and chat with open AI models offline, with voice wake phrases.",
   "type": "module",
   "main": "main.js",
@@ -91,7 +91,8 @@
       "uninstallerIcon": "build/icon.ico",
       "artifactName": "Open-Model-Desktop-Setup-${version}.exe",
       "uninstallDisplayName": "Open Model Desktop",
-      "license": "build/license.txt"
+      "license": "build/license.txt",
+      "deleteAppDataOnUninstall": true
     },
     "linux": {
       "target": "AppImage",

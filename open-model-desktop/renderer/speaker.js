@@ -92,6 +92,53 @@
       window.speechSynthesis?.cancel();
     },
     onIdle(cb, once = false) { idle.addEventListener("idle", cb, { once }); },
+    // Speak a reply while the model is still writing it. push() gets the whole answer so far; end() when it's finished.
+    // The first few words are spoken as soon as they arrive, then sentence by sentence (long ones are cut at a comma).
+    // Code and file contents are never read out: it says it's making the file instead.
+    stream(voiceId, { onSay } = {}) {
+      let fed = 0, pending = "", first = true, announced = false;
+      const words = (x) => x.trim().split(/\s+/).filter(Boolean).length;
+      const HEADER = /^[ \t]*[*_#>`-]*[ \t]*(file(?:name)?|save (?:this |it )?as)\b[^\n]*(\n|$)/gim;
+      // The answer as it should be spoken: \u0001 where a finished code block was, \u0002 at the end while one is being written.
+      const prose = (full, final) => {
+        let t = String(full), writing = false;
+        t = t.replace(/(```|~~~)[\s\S]*?\1/g, "\u0001");
+        const k = t.search(/```|~~~/);
+        if (k >= 0) { t = t.slice(0, k); writing = true; }
+        else if (!final) {
+          t = t.replace(/`{1,2}$/, "");
+          // Hold back a half-written line that may turn out to be "File: name.ext".
+          const nl = t.lastIndexOf("\n"), tail = t.slice(nl + 1);
+          if (/^[ \t]*[*_#>`-]*[ \t]*(f|fi|fil|file|filen|filena|filenam|filename|s|sa|sav|save)\b/i.test(tail) || (tail.length < 8 && !/[.!?,]\s*$/.test(tail))) t = t.slice(0, nl + 1);
+        }
+        t = t.replace(HEADER, "");
+        return { t, writing };
+      };
+      const out = (x) => { x = x.replace(/\u0001/g, " "); if (x.trim()) { this.say(x, voiceId); onSay?.(x); } };
+      const flush = (force) => {
+        for (;;) {
+          if (first) {
+            let cut = null;
+            for (const b of pending.matchAll(/[,;:.!?]\s/g)) { const head = pending.slice(0, b.index + 2); if (words(head) >= 3) { cut = head; break; } }
+            if (!cut && words(pending) >= 8 && /\s$/.test(pending) && !/\b(a|an|the|for|to|of|and|or|in|on|at|with|my|your|is|are|was)\s+$/i.test(pending)) cut = pending;
+            if (cut) { first = false; out(cut); pending = pending.slice(cut.length); continue; }
+          }
+          const m = pending.match(/^[\s\S]*?[.!?](\s|$)/);
+          if (m && (m[1] || force)) { first = false; out(m[0]); pending = pending.slice(m[0].length); continue; }
+          if (words(pending) > 22) { const c = pending.match(/^([\s\S]{20,}?[,;:])\s/) || pending.match(/^((?:\S+\s+){18})/); if (c) { out(c[1]); pending = pending.slice(c[0].length); continue; } }
+          break;
+        }
+        if (force && pending.trim()) { out(pending); pending = ""; }
+      };
+      const push = (full, final = false) => {
+        const { t, writing } = prose(full, final);
+        const add = t.slice(fed); fed = Math.max(fed, t.length);
+        for (const part of add.split(/(\u0001)/)) { if (part === "\u0001") flush(true); else pending += part; }
+        if (writing && !announced) { flush(true); announced = true; out("I'm making the file now."); }
+        flush(final);
+      };
+      return { push: (full) => push(full), end: (full) => push(full, true) };
+    },
     // Speak a whole reply, sentence by sentence.
     sayAll(text, voiceId) { for (const s of clean(text).match(/[^.!?]+[.!?]*\s*/g) || []) this.say(s, voiceId); },
   };

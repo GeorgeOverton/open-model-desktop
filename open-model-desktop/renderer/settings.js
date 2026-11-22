@@ -70,6 +70,12 @@
   $("#openChatsFolder").addEventListener("click", () => D.chats.openFolder());
   $("#makeFiles").addEventListener("change", (e) => save({ makeFiles: e.target.checked }));
   $("#openFilesFolder").addEventListener("click", () => window.desktop.files.openFolder());
+  $("#filesAutoSave").addEventListener("change", (e) => save({ filesAutoSave: e.target.checked }));
+  $("#micAllowed").addEventListener("change", (e) => { save({ micAllowed: e.target.checked }); if (!e.target.checked) bus.dispatchEvent(new CustomEvent("micOff")); });
+  $("#multiModels").addEventListener("change", (e) => save({ multiModels: e.target.checked }));
+  $("#filesAutoRun").addEventListener("change", (e) => save({ filesAutoRun: e.target.checked }));
+  // "Always" buttons on file cards change these, so keep the boxes in step.
+  bus.addEventListener("settings", (e) => { $("#filesAutoSave").checked = !!e.detail.filesAutoSave; $("#filesAutoRun").checked = !!e.detail.filesAutoRun; $("#micAllowed").checked = !!e.detail.micAllowed; });
   window.desktop.files.where().then((p) => { if (p) $("#filesWhere").textContent = p; }).catch(() => {});
   $("#delAllWrap").addEventListener("click", async (e) => {
     const act = e.target.closest("button")?.id;
@@ -246,7 +252,7 @@
     S.stop(); S.sayAll(text, v?.id);
   });
 
-  window.OMDSettings = { get: () => settings };
+  window.OMDSettings = { get: () => settings, save: (patch) => save(patch) };
 
   (async () => {
     settings = await D.settings.get();
@@ -257,6 +263,10 @@
     $("#speakChat").checked = !!settings.speakChat;
     $("#saveChats").checked = settings.saveChats !== false;
     $("#makeFiles").checked = settings.makeFiles !== false;
+    $("#filesAutoSave").checked = !!settings.filesAutoSave;
+    $("#micAllowed").checked = !!settings.micAllowed;
+    $("#multiModels").checked = settings.multiModels !== false;
+    $("#filesAutoRun").checked = !!settings.filesAutoRun;
     $("#followUp").value = String(settings.followUpSeconds ?? 8);
     $("#hfToken").value = settings.hfToken || "";
     fillSystemVoices(); renderTts(); renderVoices();

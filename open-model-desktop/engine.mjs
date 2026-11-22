@@ -8,7 +8,8 @@ const status = (data) => post({ event: "status", data });
 
 let llama = null, model = null, context = null, seq = null, chat = null;
 let file = null, systemPrompt = null, abort = null;
-let chatConv = null;   // which saved chat the current session holds, so a reopened chat (or a new model) gets its history back
+let chatConv = null;
+let defaultThreads = null;   // llama.cpp's thread count, before Voice borrows two cores   // which saved chat the current session holds, so a reopened chat (or a new model) gets its history back
 
 async function unload() {
   abort?.abort();
@@ -53,6 +54,11 @@ async function load({ file: f, path }) {
 async function send({ text, file: f, path, systemPrompt: sp, turnId, convId = null, history = null, fast = false }) {
   if (f && f !== file) await load({ file: f, path });
   if (!chat) throw new Error("Pick a model first.");
+  // When answers are spoken (Voice), leave two CPU cores free for the voice, so speaking starts sooner and doesn't stutter.
+  if (llama && !llama.gpu) {
+    defaultThreads ??= llama.maxThreads;
+    if (defaultThreads >= 4) try { llama.maxThreads = fast ? defaultThreads - 2 : defaultThreads; } catch {}
+  }
   if ((sp ?? null) !== systemPrompt) await newChat(sp);
   if (!convId) { if (chatConv) await newChat(sp); }
   else if (chatConv !== convId) {

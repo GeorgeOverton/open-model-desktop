@@ -15,6 +15,8 @@ async function load(dir) {
     env.allowRemoteModels = false;
     env.allowLocalModels = true;
     tts = await KokoroTTS.from_pretrained(MODEL, { dtype: "q8", device: "cpu" });
+    // The very first sentence is slow while the speech engine warms up, so say something silently now.
+    try { await tts.generate("Hello there.", { voice: "af_heart" }); } catch {}
   })();
   try { await loading; } finally { loading = null; }
 }

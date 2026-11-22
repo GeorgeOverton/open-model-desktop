@@ -23,7 +23,8 @@
     query: "",
     mine: [],            // downloaded models
     dl: new Map(),       // active downloads: id -> {name, quant, got, total}
-    engine: { state: "idle", file: null }, // which model is running
+    engine: { state: "idle", file: null }, // the latest status
+    running: new Map(),                    // every model running now: file -> { state, progress, gpu, limit }
   };
 
   // ---------- Shared helpers for chat.js and voice.js ----------
@@ -49,9 +50,15 @@
     const models = state.mine.filter((m) => !(m.tags || []).includes("embeddings"));
     return models.some((m) => !m.online) ? [...AUTO, ...models] : models;
   };
-  window.OMD = { $, esc, toast, show, bus, store, avatar, get mine() { return state.mine; }, get chatChoices() { return chatChoices(); }, fmtGB: (gb) => fmtGB(gb), refreshMine: () => refreshMine() };
+  window.OMD = { $, esc, toast, show, bus, store, avatar, modelIcon: (f, big) => modelIcon(f, big), nameOf: (f) => nameOf(f), get running() { return state.running; }, get mine() { return state.mine; }, get chatChoices() { return chatChoices(); }, fmtGB: (gb) => fmtGB(gb), refreshMine: () => refreshMine() };
 
   document.querySelector(".nav").addEventListener("click", (e) => { const b = e.target.closest("[data-view]"); if (b) show(b.dataset.view); });
+  // Coming to Find models always starts on Starter picks.
+  let lastView = null;
+  bus.addEventListener("view", (e) => {
+    if (e.detail === "find" && lastView !== "find" && state.tab !== "starter" && typeof renderControls === "function") { state.tab = "starter"; renderControls(); renderGrid(); }
+    lastView = e.detail;
+  });
   // External links always open in your normal browser.
   document.addEventListener("click", (e) => {
     const a = e.target.closest("a[href^='https://']"); if (!a) return;
@@ -184,7 +191,9 @@
     }[state.sort[state.tab]];
     const tagRank = (a, b) => (state.tags.size > 1 ? matches(b) - matches(a) : 0);
     // Server sorts keep Hugging Face's order (only tag matches move a model up).
-    list = [...list].sort((a, b) => tagRank(a, b) || (by ? by(a, b) : 0));
+    // Models too big for this computer (greyed out) always go to the bottom, so the ones you can use come first.
+    const tooBig = (m) => (fitFor(m.ramGB).cls === "bad" ? 1 : 0);
+    list = [...list].sort((a, b) => tooBig(a) - tooBig(b) || tagRank(a, b) || (by ? by(a, b) : 0));
     return list;
   }
   const newness = (m) => (m.released ? Date.parse(m.released) : m.created || 0);
@@ -233,6 +242,18 @@
     const k = MAKERS[maker] || {};
     return LOGOS[k.logo] ? `<img src="${LOGOS[k.logo]}" alt="${esc(maker)} logo">` : `<span class="mono">${esc(k.mono || (fallback || maker || "?")[0].toUpperCase())}</span>`;
   };
+  // A small round icon for a model (its maker's logo), used in Chat and Voice so you can see which model is talking.
+  function modelIcon(file, big) {
+    const cls = `micon ${big ? "big" : ""}`;
+    if (!file) return `<span class="${cls}" aria-hidden="true"><span class="mono">?</span></span>`;
+    if (String(file).startsWith("@auto")) return `<span class="${cls} auto" aria-hidden="true" title="Optimal: the app picks the model">✨</span>`;
+    const m = state.mine.find((x) => x.file === file) || (file === "@claude" ? { maker: "Anthropic", name: "Claude" } : { name: String(file).split("/").pop(), repo: file });
+    const maker = file === "@claude" ? "Anthropic" : makerOf(m);
+    const { hue = file === "@claude" ? 18 : 230, sat = 55 } = MAKERS[maker] || {};
+    const inner = file === "@claude" ? `<span class="mono">A</span>` : logoImg(maker, m.name);
+    return `<span class="${cls}" style="--mh:${hue};--ms:${sat}%" title="${esc(m.name || "")}" aria-hidden="true">${inner}</span>`;
+  }
+  const nameOf = (file) => state.mine.find((x) => x.file === file)?.name || (file === "@claude" ? "Claude" : String(file || "").startsWith("@auto") ? "Optimal" : "");
   const paramLabel = (m) => m.paramsLabel || (m.params ? (m.params < 1 ? Math.round(m.params * 1000) + "M" : +(+m.params).toFixed(1) + "B") : "");
   function tile(m) {
     const maker = makerOf(m);
@@ -608,7 +629,7 @@
   async function claudeEntry() {
     const [s, models] = await Promise.all([D.settings.get(), D.claude.models()]);
     const cm = models.find((x) => x.id === (s.claudeModel ?? "")) || models[0];
-    return { file: "@claude", name: "Claude", maker: "Anthropic", online: true, ready: !!s.claudeEnabled, quant: (cm.id ? cm.name : "Pro plan") + " · online",
+    return { file: "@claude", name: (s.modelNames || {})["@claude"] || "Claude", maker: "Anthropic", online: true, ready: !!s.claudeEnabled, quant: (cm.id ? cm.name : "Pro plan") + " · online",
       modelName: cm.id ? "Claude " + cm.name : "Claude", blurb: cm.blurb, tags: ["chat", "reasoning", "coding", "writing", "multilingual"] };
   }
   let claude = null;
@@ -641,7 +662,8 @@
     $("#mineGrid").innerHTML = local.length ? sortMine(local).map((m) => { const f = factsFor(m.repo); const mm = { ...f, ...m, id: m.repo, use: f.use || m.blurb, sizeGB: m.size / 1e9 }; return `<article class="card mcard mine ${isFav(m.file) ? "fav" : ""}">
         ${tile(mm)}${star(m.file, m.name)}
         <div class="info">
-        <h3>${esc(m.name)}</h3>
+        <div class="mname-row" data-name-for="${esc(m.file)}"><h3>${esc(m.name)}</h3><button class="cbtn" type="button" data-rename="${esc(m.file)}" title="Give it your own name" aria-label="Rename ${esc(m.name)}">✎</button></div>
+        ${m.defaultName && m.defaultName !== m.name ? `<div class="small muted">${esc(m.defaultName)}</div>` : ""}
         <div class="use">${esc(mm.use || "")}</div>
         <div class="foot">${pill(levelOf(mm.sizeGB, mm))}<span class="small muted" title="${esc(m.quant || "")}">${fmtGB(mm.sizeGB)} on disk</span></div>
         <div class="runrow" data-run-for="${esc(m.file)}">${runControls(m.file)}</div>
@@ -703,25 +725,30 @@
 
   // Run / Running / Cancel for each downloaded model. One model runs at a time.
   function runControls(file) {
-    const st = state.engine;
-    if (file === "@claude" && st.file === file) {
+    const r = state.running.get(file);
+    const st = r ? { ...r, file } : { state: "idle", file: null };
+    const others = [...state.running.keys()].filter((f) => f !== file).length;
+    const multi = window.OMDSettings?.get().multiModels !== false;
+    st.file = r ? file : (others ? "other" : null);
+    if (!r && others && multi) st.state = "idle-multi";
+    if (file === "@claude" && r) {
       return st.state === "loading" ? `<span class="run loading"><span class="spinner"></span> Connecting…</span>`
-        : st.limit ? `<span class="run limit">⛔ Plan limit reached${st.limit !== "later" ? ` · resets ${esc(st.limit)}` : ""}</span><button class="btn sm" data-stop>Cancel</button>`
-        : `<span class="run on"><span class="live"></span> Running <span class="muted small">(online)</span></span><button class="btn sm" data-stop>Cancel</button>`;
+        : st.limit ? `<span class="run limit">⛔ Plan limit reached${st.limit !== "later" ? ` · resets ${esc(st.limit)}` : ""}</span><button class="btn sm" data-stop="@claude">Cancel</button>`
+        : `<span class="run on"><span class="live"></span> Running <span class="muted small">(online)</span></span><button class="btn sm" data-stop="@claude">Stop</button>`;
     }
     if (file === "@claude") return `<button class="btn primary sm" data-run="@claude">▶ Run</button>
-      <span class="small muted">${st.state !== "idle" && st.file ? "Stops the local model and uses Claude" : "Checks Claude Code is signed in"}</span>`;
+      <span class="small muted">${st.state === "idle-multi" ? "Runs alongside your other models" : st.file ? "Stops the local model and uses Claude" : "Checks Claude Code is signed in"}</span>`;
     if (st.file === file && st.state === "loading") {
       const pct = st.progress ? Math.round(st.progress * 100) : 0;
       return `<span class="run loading"><span class="spinner"></span> Starting… ${pct ? pct + "%" : ""}</span>
-        <button class="btn sm" data-stop>Cancel</button>`;
+        <button class="btn sm" data-stop="${esc(file)}">Cancel</button>`;
     }
     if (st.file === file && st.state === "ready") {
       return `<span class="run on"><span class="live"></span> Running${st.gpu ? ` <span class="muted small">(${esc(String(st.gpu).toUpperCase())} graphics)</span>` : ""}</span>
-        <button class="btn sm" data-stop>Cancel</button>`;
+        <button class="btn sm" data-stop="${esc(file)}">Stop</button>`;
     }
     return `<button class="btn primary sm" data-run="${esc(file)}">▶ Run</button>
-      <span class="small muted">${st.state !== "idle" && st.file ? "Switches from the running model" : "Loads it ready to chat"}</span>`;
+      <span class="small muted">${st.state === "idle-multi" ? "Runs alongside the others if there's enough memory" : st.file ? "Switches from the running model" : "Loads it ready to chat"}</span>`;
   }
   function renderRun() {
     document.querySelectorAll("[data-run-for]").forEach((el) => { el.innerHTML = runControls(el.dataset.runFor); });
@@ -732,12 +759,17 @@
     if (go) { show(go.dataset.goto); if (go.hasAttribute("data-claude-settings")) setTimeout(() => $("#claudeApiBox")?.scrollIntoView({ block: "start" }), 50); return; }
     const run = e.target.closest("[data-run]");
     if (run) {
-      state.engine = { state: "loading", file: run.dataset.run }; renderRun();
+      state.running.set(run.dataset.run, { state: "loading" }); renderRun();
       try { await D.chat.load(run.dataset.run); }
       catch (err) { const msg = String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ""); if (!/Cancelled/.test(msg)) toast(msg, 7000); }
       return;
     }
-    if (e.target.closest("[data-stop]")) { await D.chat.unload(); return; }
+    const stop = e.target.closest("[data-stop]");
+    if (stop) { await D.chat.unload(stop.dataset.stop || undefined); return; }
+    const rn = e.target.closest("[data-rename]");
+    if (rn) return startRename(rn.dataset.rename);
+    const wk = e.target.closest("[data-wake]");
+    if (wk) return wakeAnswer(wk);
     const c = e.target.closest("[data-chat]");
     if (c) { bus.dispatchEvent(new CustomEvent("chatWith", { detail: c.dataset.chat })); return show("chat"); }
     const d = e.target.closest("[data-del]");
@@ -750,15 +782,81 @@
   $("#openFolder").addEventListener("click", () => D.sys.openModelsFolder());
 
   // Engine status in the sidebar.
+  function setRunning(list, s = {}) {
+    if (!list) return;
+    state.running = new Map(list.map((r) => [r.file, r]));
+    // Claude connecting isn't in the list yet.
+    if (s.online && s.state === "loading") state.running.set(s.file, { state: "loading", online: true });
+  }
+  function renderEngineStatus() {
+    const run = [...state.running.entries()];
+    const label = ([f, r]) => {
+      const n = esc(nameOf(f) || "model");
+      return r.online ? (r.state === "loading" ? "⏳ Connecting to Claude…" : r.limit ? "⛔ Claude plan limit reached" : `☁ ${n} ready <span class="muted">(online)</span>`)
+        : r.state === "loading" ? `⏳ Loading ${n}${r.progress ? ` ${Math.round(r.progress * 100)}%` : "…"}` : `🟢 ${n} ready`;
+    };
+    $("#engineStatus").innerHTML = !run.length ? "No model loaded" : run.length === 1 ? label(run[0])
+      : `<b>${run.length} models running</b>${run.map((x) => `<div class="small">${modelIcon(x[0])} ${label(x).replace(/^🟢 /, "")}</div>`).join("")}`;
+  }
   D.chat.onStatus((s) => {
     state.engine = { state: s.state, file: s.file || null, progress: s.progress, gpu: s.gpu ?? state.engine.gpu, limit: s.limit || "" };
     if (s.state === "ready" && s.file && s.file !== state.lastReady) { state.lastReady = s.file; markUsed(s.file); }
-    renderRun();
-    const m = state.mine.find((x) => x.file === s.file);
-    $("#engineStatus").innerHTML = s.online ? (s.state === "loading" ? "⏳ Connecting to Claude…" : s.limit ? "⛔ Claude plan limit reached" : `☁ Claude ready <span class="muted">(online)</span>`)
-      : s.state === "loading" ? `⏳ Loading ${esc(m?.name || "model")}${s.progress ? ` ${Math.round(s.progress * 100)}%` : "…"}`
-      : s.state === "ready" ? `🟢 ${esc(m?.name || "Model")} ready` : "No model loaded";
+    setRunning(s.running, s);
+    renderRun(); renderEngineStatus();
+    bus.dispatchEvent(new CustomEvent("running"));
   });
+  D.chat.onNotice?.((n) => toast(n.text, 7000));
+
+  // ---------- Your own names for models ----------
+  function startRename(file) {
+    const row = document.querySelector(`[data-name-for="${CSS.escape(file)}"]`); if (!row) return;
+    const m = state.mine.find((x) => x.file === file); if (!m) return;
+    row.innerHTML = `<input class="crename" value="${esc(m.name)}" aria-label="New name for ${esc(m.name)}" maxlength="40"><button class="btn sm primary" type="button" data-rn-ok>Save</button><button class="btn sm ghost" type="button" data-rn-reset title="Go back to ${esc(m.defaultName || m.name)}">Reset</button>`;
+    const inp = row.querySelector("input"); inp.focus(); inp.select();
+    let done = false;
+    const finish = async (name) => {
+      if (done) return; done = true;
+      if (name == null) return refreshMine();
+      await saveName(file, name.trim());
+    };
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(inp.value); if (e.key === "Escape") finish(null); });
+    row.querySelector("[data-rn-ok]").addEventListener("click", () => finish(inp.value));
+    row.querySelector("[data-rn-reset]").addEventListener("mousedown", (e) => { e.preventDefault(); finish(""); });
+    inp.addEventListener("blur", () => setTimeout(() => { if (!done && !row.contains(document.activeElement)) finish(inp.value); }, 150));
+  }
+  async function saveName(file, name) {
+    const s = await D.settings.get();
+    const old = state.mine.find((x) => x.file === file);
+    const names = { ...(s.modelNames || {}) };
+    if (!name || name === old?.defaultName) delete names[file]; else names[file] = name;
+    const next = await D.settings.set({ modelNames: names });
+    window.OMDSettings?.save ? await window.OMDSettings.save({ modelNames: names }) : bus.dispatchEvent(new CustomEvent("settings", { detail: next }));
+    await refreshMine();
+    const nice = names[file] || old?.defaultName || name;
+    if (!names[file]) return toast(`Back to its own name: ${nice}.`);
+    toast(`Renamed to ${nice}. Chat, Voice mode and the model menus use this name now.`, 4000);
+    // Offer a matching wake phrase ("Hey Nova") for Voice mode.
+    const phrase = "Hey " + nice.split(/\s+/).slice(0, 2).join(" ");
+    const wakes = s.wakePhrases || [];
+    if (wakes.some((p) => p.phrase.toLowerCase() === phrase.toLowerCase())) return;
+    const row = document.querySelector(`[data-name-for="${CSS.escape(file)}"]`);
+    row?.insertAdjacentHTML("afterend", `<div class="wakeoffer small" role="group">🎙️ Wake it in Voice mode by saying <b>"${esc(phrase)}"</b>?
+      <button class="btn sm primary" type="button" data-wake="yes" data-file="${esc(file)}" data-phrase="${esc(phrase)}">Yes</button><button class="btn sm ghost" type="button" data-wake="no">No thanks</button></div>`);
+  }
+  async function wakeAnswer(btn) {
+    const box = btn.closest(".wakeoffer");
+    if (btn.dataset.wake === "yes") {
+      const s = await D.settings.get();
+      const file = btn.dataset.file, phrase = btn.dataset.phrase;
+      const wakes = [...(s.wakePhrases || [])];
+      const mine = wakes.find((p) => p.model === file);
+      if (mine) { mine.phrase = phrase; mine.aliases = []; }
+      else wakes.push({ id: Math.random().toString(36).slice(2, 8), phrase, aliases: [], model: file, personality: "" });
+      if (window.OMDSettings?.save) await window.OMDSettings.save({ wakePhrases: wakes }); else await D.settings.set({ wakePhrases: wakes });
+      toast(`Say "${phrase}" in Voice mode to wake it.`, 4000);
+    }
+    box?.remove();
+  }
 
   // ---------- Start ----------
   const factsFor = (id) => { const f = (window.MODEL_FACTS || []).find((x) => x.id === id); if (!f) return {};
@@ -778,7 +876,9 @@
     renderDownloads();
     const cur = await D.chat.current();
     if (cur.state) state.engine = { state: cur.state, file: cur.file, gpu: cur.gpu, limit: cur.limit || "" };
+    setRunning(cur.running);
     await refreshMine();
+    renderEngineStatus();
     show(store.get("view", state.mine.length ? "chat" : "find"));
   })();
   renderControls();

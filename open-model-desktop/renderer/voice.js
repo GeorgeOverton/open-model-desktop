@@ -50,7 +50,7 @@
     }
     return best;
   }
-  window.__voice = { matchWake, sound };
+  window.__voice = { matchWake, sound, handle: (entry, text) => handleCommand(entry, text) };
 
   // ---------- Speaking replies ----------
   // Speaking goes through the shared Speaker (natural voices, or the built-in voice as a fallback).
@@ -137,8 +137,9 @@
           <button class="btn sm ghost" data-act="remove" ${settings.wakePhrases.length < 2 ? "hidden" : ""}>Remove</button>
         </div>
       </div>`).join("");
+    $("#phraseCount").textContent = `(${settings.wakePhrases.length})`;
     $("#phraseSummary").innerHTML = settings.wakePhrases.map((p) => { const v = voiceFor(p); const m = window.OMD.chatChoices.find((x) => x.file === p.model);
-      return `<div class="pline">${window.OMD.avatar(v)}<div><strong>"${esc(p.phrase)}"</strong><div class="small muted">${m ? `Wakes ${esc(m.name)}` : "No model picked yet"} · answers as ${esc(v.name)} (${v.accent} ${v.gender.toLowerCase()})</div></div></div>`; }).join("");
+      return `<div class="pline">${window.OMD.modelIcon(p.model, true)}<div><strong>"${esc(p.phrase)}"</strong><div class="small muted">${m ? `Wakes ${esc(m.name)}` : "No model picked yet"} · answers as ${esc(v.name)} (${v.accent} ${v.gender.toLowerCase()})</div></div></div>`; }).join("");
     if (!mine.length) $("#phrases").insertAdjacentHTML("afterbegin", `<p class="small warn">Download a model first in <button class="linkish" data-goto="find">Find models</button>, then pick it here.</p>`);
   }
   const save = () => D.settings.set({ wakePhrases: settings.wakePhrases });
@@ -190,36 +191,103 @@
     save(); renderPhrases();
   });
 
-  function log(who, text, cls = "", voice = null) {
+  function log(who, text, cls = "", voice = null, icon = "") {
     const el = document.createElement("div");
     el.className = "vline " + (who === "you" ? "you" : "") + " " + cls;
-    el.innerHTML = (voice ? window.OMD.avatar(voice) : "") + `<b>${esc(who === "you" ? "You" : who)}</b> <span class="say"></span>`;
+    el.innerHTML = (icon ? `<span class="wicon">${icon}</span>` : voice ? window.OMD.avatar(voice) : "") + `<b class="wname">${esc(who === "you" ? "You" : who)}</b> <span class="say"></span>`;
+    $("#voiceLogBar").hidden = false;
     el.querySelector(".say").textContent = text;
     $("#voiceLog").prepend(el);
     return el.querySelector(".say");
   }
+
+  // ---------- Asking before using the microphone ----------
+  function askDialog({ title, text, yes, no }) {
+    return new Promise((resolve) => {
+      const d = document.createElement("dialog");
+      d.className = "ask";
+      d.innerHTML = `<h2>${esc(title)}</h2><p>${text}</p><div class="row"><button class="btn" data-a="no" type="button">${esc(no)}</button><button class="btn primary" data-a="yes" type="button">${esc(yes)}</button></div>`;
+      document.body.appendChild(d);
+      const done = (v) => { d.close(); d.remove(); resolve(v); };
+      d.addEventListener("click", (e) => { const b = e.target.closest("[data-a]"); if (b) done(b.dataset.a === "yes"); });
+      d.addEventListener("cancel", (e) => { e.preventDefault(); done(false); });
+      d.showModal(); d.querySelector("[data-a=yes]").focus();
+    });
+  }
+  async function allowMic() {
+    const s = window.OMDSettings?.get() || settings;
+    if (!s.micAllowed) {
+      const ok = await askDialog({ title: "Use your microphone?",
+        text: "Open Model Desktop would like to use your microphone so you can talk to your models. It only listens while Voice mode or the 🎤 button in Chat is on. " +
+          "Your speech is turned into text on this computer: nothing is recorded or uploaded.<br><br><span class=\"small muted\">You can turn this off any time in Settings → Voice mode.</span>",
+        yes: "Allow microphone", no: "Not now" });
+      if (!ok) { toast("OK, the microphone stays off."); return false; }
+      await window.OMDSettings.save({ micAllowed: true });
+    }
+    if (!(await D.sys.askMic())) { toast("Your computer blocked the microphone. Allow it for Open Model Desktop in your system's privacy settings, then try again.", 7000); return false; }
+    return true;
+  }
+  async function voskModel(hint) {
+    if (!pack.installed) pack = await D.voice.status();
+    if (!pack.installed) throw Object.assign(new Error("Download the speech pack first, in Settings → Voice mode."), { needPack: true });
+    if (!vosk) { hint?.("Loading the speech pack (a few seconds the first time)…"); vosk = await window.Vosk.createModel(pack.url); }
+    return vosk;
+  }
+  async function openMic() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    src.connect(proc); proc.connect(ctx.destination);
+    return { ctx, stream, src, proc, close() { try { proc.disconnect(); src.disconnect(); stream.getTracks().forEach((t) => t.stop()); ctx.close(); } catch {} } };
+  }
+
+  // ---------- Talking in Chat (the 🎤 button): turns speech into a message ----------
+  let chatMic = null;
+  async function listen({ onPartial, onFinal, paused, hint }) {
+    if (mode !== "off") stopListening();          // Voice mode's microphone and Chat's can't both listen
+    if (!(await allowMic())) return null;
+    const model = await voskModel(hint);
+    const mic = await openMic();
+    const rec = new model.KaldiRecognizer(mic.ctx.sampleRate);
+    rec.on("partialresult", (m) => { if (!paused?.() && m.result.partial) onPartial?.(m.result.partial); });
+    rec.on("result", (m) => { const t = (m.result.text || "").trim(); if (t && !paused?.()) onFinal?.(t); });
+    mic.proc.onaudioprocess = (ev) => { if (!paused?.()) { try { rec.acceptWaveform(ev.inputBuffer); } catch {} } };
+    chatMic = { stop() { mic.close(); try { rec.remove(); } catch {} if (chatMic === this) chatMic = null; } };
+    return chatMic;
+  }
+  bus.addEventListener("micOff", () => { if (mode !== "off") stopListening(); });
+  // Clear: wipe the screen and start a fresh conversation (the last one stays in Saved chats).
+  $("#voiceClear").addEventListener("click", () => {
+    if (mode === "speaking" || mode === "thinking") interrupt();
+    $("#voiceLog").innerHTML = ""; $("#voiceLogBar").hidden = true; $("#heard").textContent = "";
+    vconv = null; lastTurnAt = 0; active = null;
+    toast(window.OMDSettings?.get().saveChats === false ? "Cleared. The next question starts a fresh conversation." : "Cleared. The next question starts a fresh conversation (the last one is still in Saved chats).", 4000);
+  });
+  // Collapse the wake phrases (remembered).
+  const setPhrasesOpen = (open) => { $("#phrasesToggle").setAttribute("aria-expanded", open); $("#phraseSummary").hidden = !open; window.OMD.store.set("phrasesOpen", open); };
+  $("#phrasesToggle").addEventListener("click", () => setPhrasesOpen($("#phrasesToggle").getAttribute("aria-expanded") !== "true"));
+  setPhrasesOpen(window.OMD.store.get("phrasesOpen", true));
+  window.OMDVoice = { listen, allowMic, get packInstalled() { return pack.installed; } };
 
   // ---------- Listening ----------
   async function startListening() {
     if (!pack.installed) { toast("Download the speech pack first, in Settings → Voice mode."); return false; }
     if (!settings.wakePhrases.some((p) => p.model) && !testingId) { toast("Pick a model for at least one wake phrase below."); return false; }
     try {
+      chatMic?.stop(); bus.dispatchEvent(new CustomEvent("micTaken"));
+      if (!(await allowMic())) { setMode("off"); return false; }
       $("#orbState").textContent = "Starting…";
-      if (!vosk) { $("#orbHint").textContent = "Loading the speech pack (a few seconds the first time)…"; vosk = await window.Vosk.createModel(pack.url); }
-      if (!(await D.sys.askMic())) throw new Error("NotAllowed: microphone permission");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
-      const ctx = new AudioContext();
-      recognizer = new vosk.KaldiRecognizer(ctx.sampleRate);
+      await voskModel((h) => { $("#orbHint").textContent = h; });
+      const mic = await openMic();
+      recognizer = new vosk.KaldiRecognizer(mic.ctx.sampleRate);
       recognizer.on("partialresult", (m) => onPartial(m.result.partial));
       recognizer.on("result", (m) => onResult(m.result.text));
-      const src = ctx.createMediaStreamSource(stream);
-      const proc = ctx.createScriptProcessor(4096, 1, 1);
-      proc.onaudioprocess = (ev) => {
+      mic.proc.onaudioprocess = (ev) => {
         // Don't listen to ourselves while thinking or talking.
         if (mode === "wake" || mode === "command" || mode === "test") { try { recognizer.acceptWaveform(ev.inputBuffer); } catch {} }
       };
-      src.connect(proc); proc.connect(ctx.destination);
-      audio = { ctx, stream, src, proc };
+      audio = mic;
       setMode("wake");
       warm(settings.wakePhrases.find((p) => p.model));   // get the first wake phrase's model ready
       return true;
@@ -234,7 +302,7 @@
     clearTimeout(commandTimer); clearTimeout(followTimer);
     window.Speaker.stop();
     if (mode === "thinking") window.OMDChat.stop();
-    try { audio?.proc.disconnect(); audio?.src.disconnect(); audio?.stream.getTracks().forEach((t) => t.stop()); audio?.ctx.close(); } catch {}
+    audio?.close();
     try { recognizer?.remove(); } catch {}
     audio = null; recognizer = null; active = null;
     setMode("off"); $("#heard").textContent = "";
@@ -281,48 +349,66 @@
     if (!entry?.model || entry.model.startsWith("@") || window.OMDChat.busy) return;
     D.chat.load(entry.model).catch(() => {});
   }
+  // Voice conversations are saved like chats (Saved chats in Chat), unless saving is turned off.
+  let vconv = null;
+  const titleFrom = (t) => { t = t.replace(/\s+/g, " ").trim(); t = t.charAt(0).toUpperCase() + t.slice(1); return "🎙️ " + (t.length > 56 ? t.slice(0, 53).replace(/\s+\S*$/, "") + "…" : t); };
+  async function saveConv() {
+    if (!vconv || window.OMDSettings?.get().saveChats === false) return;
+    try { await D.chats.save({ id: vconv.id, title: vconv.title, model: vconv.model, modelName: vconv.modelName, messages: vconv.messages.map(({ pending, ...m }) => m) }); bus.dispatchEvent(new CustomEvent("chatsChanged")); }
+    catch (err) { console.warn("Couldn't save voice chat:", err); }
+  }
   async function handleCommand(entry, text) {
     clearTimeout(commandTimer); clearTimeout(followTimer);
     setMode("thinking");
     log("you", text);
     const name = modelName(entry.model) || entry.phrase;
     const voice = voiceFor(entry);
-    const out = log(voice.name, "…", "bot", voice);
-    // New conversation if it's been a while.
-    if (Date.now() - lastTurnAt > 120000) await D.chat.reset(null).catch(() => {});
+    const out = log(name, "…", "bot", voice, window.OMD.modelIcon(entry.model));
+    const line = out.parentElement;
+    // New conversation if it's been a while, or a different wake phrase.
+    if (!vconv || Date.now() - lastTurnAt > 120000 || vconv.entry !== entry.id) {
+      vconv = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), entry: entry.id, title: titleFrom(text), created: Date.now(), messages: [] };
+    }
+    const conv = vconv;
+    const history = conv.messages.filter((m) => m.text && !m.error).map((m) => ({ role: m.role === "user" ? "user" : "bot", text: m.text }));
+    const earlier = window.OMDChat.files.earlierNames(conv);
+    conv.model = entry.model; conv.modelName = name;
+    const um = { role: "user", text, at: Date.now(), voice: true }, bm = { role: "bot", text: "", who: "🎙️ voice · " + voice.name, voice: voice.id, model: entry.model, pending: true };
+    conv.messages.push(um, bm);
+    const files = window.OMDChat.files.filesOn();
     const system = [entry.personality || `You are ${entry.phrase.replace(/^(hey|ok|hi)\s+/i, "")}, a helpful voice assistant.`,
-      "You are talking out loud, so answer in a few short spoken sentences. No lists, tables, code blocks or markdown unless asked."].join(" ");
-    let full = "", pending = "", first = true;
-    const words = (s) => s.trim().split(/\s+/).filter(Boolean).length;
-    const flush = (force) => {
-      // Start talking as soon as possible: the first bit is spoken at the first comma (or after about 10 words),
-      // then the rest goes sentence by sentence while the model keeps writing.
-      if (first) {
-        let cut = null;
-        for (const b of pending.matchAll(/[,;:.!?]\s/g)) { const head = pending.slice(0, b.index + 2); if (words(head) >= 3) { cut = head; break; } }
-        if (!cut && words(pending) >= 11 && /\s$/.test(pending)) cut = pending;
-        if (cut) { first = false; speak(cut, voice.id); pending = pending.slice(cut.length); return flush(force); }
-      }
-      const m = pending.match(/^[\s\S]*?[.!?](\s|$)/);
-      if (m && (m[1] || force)) { first = false; speak(m[0], voice.id); pending = pending.slice(m[0].length); return flush(force); }
-      if (force && pending.trim()) { speak(pending, voice.id); pending = ""; }
-    };
+      "You are talking out loud, so answer in a few short spoken sentences. No lists, tables or markdown unless asked.",
+      files ? "If the user asks you to make a file, still make it as a code block (the app saves it and won't read it out), and say in one short sentence what it is." : "No code blocks unless asked."].join(" ");
+    const speech = settings.speakReplies ? window.Speaker.stream(voice.id, { onSay: () => setMode("speaking") }) : null;
+    const show = (final) => window.OMDChat.files.showIn(line, out, bm.text, { request: text, final, earlier, bm, conv, onChange: saveConv });
     generating = true;
     try {
       if (window.OMD.chatChoices.find((m) => m.file === entry.model) == null) throw new Error(`The model for "${entry.phrase}" isn't downloaded any more. Pick another one below.`);
       $("#orbHint").textContent = `Using ${name}`;
       await window.OMDChat.ask({
-        file: entry.model, text, systemPrompt: system, fast: true,
-        onRoute: (r) => { $("#orbHint").textContent = `Optimal picked ${r.name} for ${r.taskLabel}`; },
-        onText: (t) => { full += t; pending += t; out.textContent = full; if (mode === "thinking" || mode === "speaking") flush(false); },
+        file: entry.model, text, systemPrompt: system, fast: true, files, convId: conv.id, history,
+        onRoute: (r) => { $("#orbHint").textContent = `Optimal picked ${r.name} for ${r.taskLabel}`; bm.model = r.file;
+          line.querySelector(".wicon").innerHTML = window.OMD.modelIcon(r.file); line.querySelector(".wname").textContent = window.OMD.nameOf(r.file) || r.name; },
+        onText: (t) => { bm.text += t; show(false); if (mode === "thinking" || mode === "speaking") speech?.push(bm.text); },
       });
-      flush(true);
+      speech?.end(bm.text);
       lastTurnAt = Date.now();
-      if (!full) out.textContent = "(stopped)";
+      if (!bm.text) { out.textContent = "(stopped)"; bm.stopped = true; }
+      else {
+        show(true);
+        const made = await window.OMDChat.files.finishFiles(line);
+        if (made.length && settings.speakReplies) {
+          const names = made.map((b) => b.name.replace(/\./g, " dot ")).join(" and ");
+          window.Speaker.say(made.every((b) => b.path) ? `I've saved ${names} in your Documents folder.` : `I've made ${names}. Press Save on the screen if you want to keep it.`, voice.id);
+          setMode("speaking");
+        }
+      }
     } catch (err) {
-      const msg = String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
-      out.textContent = msg; out.parentElement.classList.add("err");
+      bm.error = String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+      out.textContent = bm.error; line.classList.add("err");
     }
+    delete bm.pending;
+    saveConv();
     generating = false;
     if (!window.Speaker.speaking) afterReply();
   }

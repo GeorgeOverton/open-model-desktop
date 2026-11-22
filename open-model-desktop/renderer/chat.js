@@ -30,11 +30,41 @@
   function md(s) { return renderAnswer(s, { files: false, final: true }).html; }
 
   // ---------- Files the model makes ----------
-  // renderer/files.js finds them (forgiving, for small models). Each one is saved as a real file in Documents\Open Model Desktop.
+  // renderer/files.js finds them (forgiving, for small models). The app asks before saving a file on your computer and before
+  // opening one that runs code, unless you said "always" (Settings → Saved chats turns that off again).
+  // Files go in Documents\Open Model Desktop\<date> <chat title>\.
+  // A "host" element (a chat message, or a line in Voice mode) holds: _blocks, _conv, _bm (the saved message), _onChange.
   const F = window.OMDFiles;
-  const ICON = (ext) => (ext === "html" ? "🌐" : ext === "csv" || ext === "tsv" ? "📊" : ext === "md" || ext === "txt" ? "📝" : "📄");
+  const ICON = (ext) => (ext === "html" ? "🌐" : ext === "csv" || ext === "tsv" ? "📊" : ext === "md" || ext === "txt" ? "📝" : F.runsCode("x." + ext) ? "⚙️" : "📄");
+  const errText = (err) => String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+  const setting = (k) => window.OMDSettings?.get()[k];
+  function cardHtml(b) {
+    const ext = (b.name.split(".").pop() || "").toLowerCase();
+    const lines = b.content.split("\n").filter((l, n, a) => l || n < a.length - 1).length;
+    const state = !b.done ? " · writing…" : b.path ? ` · <span class="fsaved" title="${esc(b.path)}">saved ✓</span>` : b.declined ? " · not saved" : "";
+    const acts = !b.done ? "" : b.path
+      ? `<button class="btn sm primary" data-f="open" type="button">Open</button><button class="btn sm" data-f="reveal" type="button" title="Show the file in its folder">Show in folder</button><button class="btn sm" data-f="saveas" type="button">Save as…</button><button class="btn sm" data-f="copy" type="button">Copy</button>`
+      : `${b.declined ? `<button class="btn sm" data-f="save" type="button">Save it</button>` : ""}<button class="btn sm" data-f="saveas" type="button">Save as…</button><button class="btn sm" data-f="copy" type="button">Copy</button>`;
+    let ask = "";
+    if (b.done && b.asking && !b.path) ask = `<div class="fask" role="group" aria-label="Save this file?"><span>💾 Save <b>${esc(b.name)}</b> on this computer? It goes in your Documents folder, in <i>Open Model Desktop</i>.</span>
+      <span class="fask-btns"><button class="btn sm primary" data-f="save" type="button">Save</button><button class="btn sm" data-f="always-save" type="button">Always save files</button><button class="btn sm ghost" data-f="decline" type="button">Don't save</button></span></div>`;
+    if (b.confirmRun) ask = `<div class="fask warn-box" role="alertdialog" aria-label="Open this program?"><span>⚠️ <b>${esc(b.name)}</b> is a program. Opening it can <b>run it on your computer</b>. Only open it if you trust what it does.</span>
+      <span class="fask-btns"><button class="btn sm primary" data-f="run" type="button">Open it</button><button class="btn sm" data-f="always-run" type="button">Always allow</button><button class="btn sm ghost" data-f="norun" type="button">Cancel</button></span></div>`;
+    return `<div class="filecard" data-b="${b.i}"><div class="fhead"><span class="ficon" aria-hidden="true">${ICON(ext)}</span>
+      <div class="fname"><b>${esc(b.name)}</b><span class="small muted">${esc(F.KIND[ext] || ext.toUpperCase() + " file")} · ${lines} ${lines === 1 ? "line" : "lines"}${state}</span></div>
+      <span class="factions">${acts}</span></div>
+      ${b.done ? `<div class="fdesc small"><div>${esc(b.desc || "")}</div><div><b>How to use it:</b> ${esc(F.howTo(b.name))}</div></div>` : ""}
+      ${ask}
+      <details class="fprev" ${b.done ? "" : "open"}><summary>${b.done ? "Show what's inside" : "Writing the file…"}</summary><pre><code>${esc(b.content)}</code></pre></details></div>`;
+  }
   function renderAnswer(text, opts = {}) {
     const { parts, blocks } = F.parse(text, opts);
+    const declined = opts.declined || [];
+    for (const b of blocks) if (b.name && b.done) {
+      b.desc = F.describe(b, opts.request);
+      b.content = F.withNote(b, opts.request);   // what it is and how to run it, at the top of code files
+      if (!b.path) { b.declined = declined.includes(b.i); b.asking = !b.declined && !!opts.final; }
+    }
     let html = "";
     parts.forEach((p, k) => {
       if (p.t === "text") {
@@ -44,50 +74,87 @@
         if (s.trim()) html += inline(s);
         return;
       }
-      const b = p.b, i = b.i;
-      if (b.name) {
-        const ext = (b.name.split(".").pop() || "").toLowerCase();
-        const lines = b.content.split("\n").filter((l, n, a) => l || n < a.length - 1).length;
-        html += `<div class="filecard" data-b="${i}"><div class="fhead"><span class="ficon" aria-hidden="true">${ICON(ext)}</span>
-          <div class="fname"><b>${esc(b.name)}</b><span class="small muted">${esc(F.KIND[ext] || ext.toUpperCase() + " file")} · ${lines} ${lines === 1 ? "line" : "lines"}${b.done ? (b.path ? ` · <span class="fsaved" title="${esc(b.path)}">saved ✓</span>` : "") : " · writing…"}</span></div>
-          <span class="factions">${b.done ? `<button class="btn sm primary" data-f="open" type="button">Open</button><button class="btn sm" data-f="reveal" type="button" title="Show the file in its folder">Show in folder</button><button class="btn sm" data-f="saveas" type="button">Save as…</button><button class="btn sm" data-f="copy" type="button">Copy</button>` : ""}</span></div>
-          <details class="fprev" ${b.done ? "" : "open"}><summary>${b.done ? "Show what's inside" : "Writing the file…"}</summary><pre><code>${esc(b.content)}</code></pre></details></div>`;
-      } else {
-        html += `<div class="codeblock" data-b="${i}"><pre><code>${esc(b.content)}</code></pre>${b.done ? `<span class="cbar"><button class="cbtn2" data-f="copy" type="button">Copy</button><button class="cbtn2" data-f="saveas" type="button">Save as file</button></span>` : ""}</div>`;
-      }
+      const b = p.b;
+      html += b.name ? cardHtml(b)
+        : `<div class="codeblock" data-b="${b.i}"><pre><code>${esc(b.content)}</code></pre>${b.done ? `<span class="cbar"><button class="cbtn2" data-f="copy" type="button">Copy</button><button class="cbtn2" data-f="saveas" type="button">Save as file</button></span>` : ""}</div>`;
     });
     return { html, blocks };
   }
-  const filesOn = () => window.OMDSettings?.get().makeFiles !== false;
-  const showAnswer = (el, text, opts) => { const r = renderAnswer(text, { files: filesOn(), ...opts }); el.innerHTML = r.html; el.closest(".msg")._blocks = r.blocks; el.closest(".msg")._conv = cur; return r.blocks; };
+  const filesOn = () => setting("makeFiles") !== false;
+  // Show an answer in el; host keeps the blocks so the buttons work.
+  function showIn(host, el, text, opts = {}) {
+    const bm = opts.bm || host._bm;
+    const r = renderAnswer(text, { files: filesOn(), saved: bm?.files || [], declined: bm?.declined || [], ...opts });
+    el.innerHTML = r.html;
+    host.classList.add("fhost");
+    host._blocks = r.blocks; host._el = el;
+    if (opts.conv) host._conv = opts.conv;
+    if (bm) host._bm = bm;
+    if (opts.onChange) host._onChange = opts.onChange;
+    return r.blocks;
+  }
+  const showAnswer = (el, text, opts = {}) => showIn(el.closest(".msg"), el, text, { conv: cur, ...opts });
+  const redraw = (host, b) => { const card = host._el?.querySelector(`.filecard[data-b="${b.i}"]`); if (card) card.outerHTML = cardHtml(b); };
   // Names of the files made earlier in a conversation (before message index `upto`).
   const earlierNames = (conv, upto = Infinity) => (conv?.messages || []).slice(0, upto).flatMap((m) => (m.files || []).map((f) => f.name));
-  // Save the files from a finished answer as real files, so Open works straight away and after a restart.
-  async function writeFiles(conv, bm, el) {
-    const named = (el.closest(".msg")._blocks || []).filter((b) => b.name && b.done);
-    if (!named.length) return;
-    bm.files = [];
-    for (const b of named) {
-      try {
-        const path = await D.files.write({ chatId: conv.id, title: conv.title, name: b.name, content: b.content });
-        bm.files.push({ name: b.name, path, b: b.i, ...(b.whole ? { whole: true } : {}) });
-      } catch (err) { console.warn("Couldn't save file:", err); toast("Couldn't save " + b.name + ": " + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ""), 5000); }
+  async function saveBlock(host, b) {
+    const c = host._conv || {};
+    b.path = await D.files.write({ chatId: c.id || "unsaved", title: c.title || "", name: b.name, content: b.content });
+    b.asking = false; b.declined = false;
+    const bm = host._bm;
+    if (bm) {
+      bm.files = [...(bm.files || []).filter((f) => f.b !== b.i), { name: b.name, path: b.path, b: b.i, ...(b.whole ? { whole: true } : {}) }];
+      bm.declined = (bm.declined || []).filter((x) => x !== b.i);
     }
+    redraw(host, b);
+    return b.path;
   }
-  $("#messages").addEventListener("click", async (e) => {
+  // After an answer finishes: save its files straight away if you said "always", otherwise each card asks.
+  // Returns the files, so Voice mode can say what it made.
+  async function finishFiles(host) {
+    const named = (host._blocks || []).filter((b) => b.name && b.done);
+    if (!named.length) return [];
+    if (setting("filesAutoSave")) {
+      for (const b of named) { try { await saveBlock(host, b); } catch (err) { toast("Couldn't save " + b.name + ": " + errText(err), 5000); } }
+      host._onChange?.();
+    }
+    return named;
+  }
+  async function openBlock(host, b, how) {
+    if (!b.path) await saveBlock(host, b);
+    if (how === "open") await D.files.open(b.path); else await D.files.reveal(b.path);
+  }
+  document.addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-f]"); if (!btn) return;
-    const msg = btn.closest(".msg"), holder = btn.closest("[data-b]");
-    const b = msg?._blocks?.[+holder.dataset.b]; if (!b) return;
+    const host = btn.closest(".fhost"), holder = btn.closest("[data-b]");
+    const b = host?._blocks?.[+holder?.dataset.b]; if (!b) return;
     const name = b.name || `snippet.${F.extOf(b.lang, b.content, "")}`;
+    const f = btn.dataset.f;
     try {
-      if (btn.dataset.f === "copy") { await D.sys.copy(b.content); toast("Copied."); }
-      else if (btn.dataset.f === "saveas") { const p = await D.files.saveAs({ name, content: b.content }); if (p) toast("Saved to " + p, 4000); }
-      else if (btn.dataset.f === "open" || btn.dataset.f === "reveal") {
-        if (!b.path) { const c = msg._conv || cur; b.path = await D.files.write({ chatId: c?.id || "unsaved", title: c?.title || "", name, content: b.content }); }
-        if (btn.dataset.f === "open") await D.files.open(b.path); else await D.files.reveal(b.path);
-      }
-    } catch (err) { toast("Couldn't do that: " + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ""), 5000); }
+      if (f === "copy") { await D.sys.copy(b.content); toast("Copied."); }
+      else if (f === "saveas") { const p = await D.files.saveAs({ name, content: b.content }); if (p) toast("Saved to " + p, 4000); }
+      else if (f === "save" || f === "always-save") {
+        if (f === "always-save") { await window.OMDSettings.save({ filesAutoSave: true }); toast("Files will be saved without asking. You can change this in Settings → Saved chats.", 5000); }
+        await saveBlock(host, b);
+        // "Always" also saves the other files in the same answer that are still waiting.
+        if (f === "always-save") for (const x of host._blocks) if (x.name && x.done && !x.path && x.asking) await saveBlock(host, x);
+        host._onChange?.();
+      } else if (f === "decline") {
+        b.asking = false; b.declined = true;
+        if (host._bm) host._bm.declined = [...new Set([...(host._bm.declined || []), b.i])];
+        redraw(host, b); host._onChange?.();
+      } else if (f === "open") {
+        if (F.runsCode(name) && !setting("filesAutoRun")) { b.confirmRun = true; redraw(host, b); host._el.querySelector(`.filecard[data-b="${b.i}"] [data-f=run]`)?.focus(); return; }
+        await openBlock(host, b, "open");
+      } else if (f === "run" || f === "always-run") {
+        if (f === "always-run") { await window.OMDSettings.save({ filesAutoRun: true }); toast("Programs will open without asking. You can change this in Settings → Saved chats.", 5000); }
+        b.confirmRun = false; redraw(host, b);
+        await openBlock(host, b, "open");
+      } else if (f === "norun") { b.confirmRun = false; redraw(host, b); }
+      else if (f === "reveal") await openBlock(host, b, "reveal");
+    } catch (err) { toast("Couldn't do that: " + errText(err), 5000); }
   });
+  window.OMDChat.files = { showIn, finishFiles, earlierNames, filesOn };
 
   // ---------- Model picker ----------
   function fillModels() {
@@ -135,10 +202,14 @@
   const voiceById = (id) => window.Speaker.VOICES?.find((v) => v.id === id) || window.Speaker.defaultVoice;
   function botEl(m, ctx = {}) {
     const v = voiceById(m.voice);
-    const el = addEl("bot", `<div class="who">${window.OMD.avatar(v)}<b>${esc(v.name)}</b><span class="small muted mname">${esc(m.who || "")}</span>
+    // The model's own icon and name, so you can see which model answered (several can be running).
+    const file = m.model || cur?.model || "";
+    const name = window.OMD.nameOf(file) || m.who || v.name;
+    const extra = m.who && m.who !== name ? m.who : "";
+    const el = addEl("bot", `<div class="who"><span class="wicon">${window.OMD.modelIcon(file)}</span><b class="wname">${esc(name)}</b><span class="small muted mname">${esc(extra)}</span>
       <button class="spk" type="button" title="Read this answer out loud in ${esc(v.name)}'s voice" aria-label="Read aloud" hidden>🔊</button></div><details class="thinking" ${m.thought ? "" : "hidden"}><summary>${m.thought ? "Show its thinking" : "Thinking…"}</summary><div class="tbody">${m.thought ? md(m.thought) : ""}</div></details><div class="answer">${
         m.error ? `<span class="err">${esc(m.error)}</span>` : m.pending ? `<span class="dots">●●●</span>` : m.text ? "" : `<span class="muted">(stopped)</span>`}</div>`);
-    if (m.text && !m.error) showAnswer(el.querySelector(".answer"), m.text, { request: ctx.request || "", final: true, saved: m.files || [], earlier: ctx.earlier || [] });
+    if (m.text && !m.error) showAnswer(el.querySelector(".answer"), m.text, { request: ctx.request || "", final: true, bm: m, earlier: ctx.earlier || [], conv: cur, onChange: () => persist(cur) });
     el.querySelector(".spk").addEventListener("click", () => { window.Speaker.stop(); window.Speaker.sayAll(el._text ?? m.text, v.id); });
     if (m.text) el.querySelector(".spk").hidden = false;
     return el;
@@ -258,7 +329,35 @@
   const prompt = $("#prompt");
   prompt.addEventListener("input", () => { prompt.style.height = "auto"; prompt.style.height = Math.min(200, prompt.scrollHeight) + "px"; });
   prompt.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
-  $("#stopBtn").addEventListener("click", () => D.chat.stop());
+  $("#stopBtn").addEventListener("click", () => { D.chat.stop(); window.Speaker.stop(); });
+
+  // ---------- Talking in Chat: press 🎤, speak, and it sends what you said; the answer is read out and saved like any chat ----------
+  let talk = null;
+  const micBtn = $("#micBtn"), micState = (t) => { $("#micState").textContent = t; };
+  const LISTENING = "🎤 Listening… just talk, and it sends when you pause. Press 🎤 again (or Esc) to stop.";
+  async function startTalk() {
+    micBtn.disabled = true;
+    try {
+      const l = await window.OMDVoice.listen({
+        hint: micState,
+        paused: () => busy || window.Speaker.speaking,
+        onPartial: (t) => { prompt.value = t; micState("Hearing: " + t); },
+        onFinal: (t) => { prompt.value = t.charAt(0).toUpperCase() + t.slice(1); micState("Sending…"); $("#composer").requestSubmit(); },
+      });
+      if (!l) return;
+      talk = l; micBtn.setAttribute("aria-pressed", "true"); micBtn.title = "Stop talking"; micState(LISTENING);
+    } catch (err) {
+      toast(err.needPack ? "To talk in Chat, first download the speech pack (about 40 MB) on the Voice page." : "Couldn't start the microphone: " + errText(err), 6000);
+      micState("");
+    } finally { micBtn.disabled = false; }
+  }
+  function stopTalk() { talk?.stop(); talk = null; micBtn.setAttribute("aria-pressed", "false"); micBtn.title = "Talk instead of typing"; micState(""); }
+  micBtn.addEventListener("click", () => (talk ? stopTalk() : startTalk()));
+  bus.addEventListener("micTaken", stopTalk);
+  bus.addEventListener("micOff", stopTalk);
+  bus.addEventListener("view", (e) => { if (e.detail !== "chat" && talk) stopTalk(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && talk && !document.querySelector("dialog[open]")) { window.Speaker.stop(); stopTalk(); } });
+  window.Speaker.onIdle(() => { if (talk && !busy) micState(LISTENING); });
 
   $("#composer").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -274,8 +373,11 @@
     const history = historyOf(cur.messages), earlier = earlierNames(cur);
     cur.model = chatFile; cur.modelName = mm.name || modelName;
     const v = window.Speaker.defaultVoice;
-    const um = { role: "user", text, at: Date.now() };
-    const bm = { role: "bot", text: "", thought: "", who: modelName, voice: v.id, pending: true };
+    const spoken = !!talk;                       // asked out loud with the 🎤 button
+    const um = { role: "user", text, at: Date.now(), ...(spoken ? { voice: true } : {}) };
+    const speech = spoken || window.OMDSettings?.get().speakChat ? window.Speaker.stream(v.id) : null;
+    if (spoken) micState("Thinking…");
+    const bm = { role: "bot", text: "", thought: "", who: modelName, voice: v.id, model: chatFile, pending: true };
     cur.messages.push(um, bm);
     userEl(text);
     const bot = botEl(bm);
@@ -284,9 +386,10 @@
     setBusy(true);
     try {
       const r = await ask({
-        file: chatFile, text, convId: conv.id, history, claudeSession: conv.claudeSession, files: filesOn(),
-        onText: (t) => { bm.text += t; showAnswer(ans, bm.text, { request: text, earlier }); bot.scrollIntoView({ block: "end" }); },
-        onRoute: (r) => { bm.who = `✨ Optimal picked ${r.name} · for ${r.taskLabel}${r.fits ? "" : ` (nothing fits ${r.tierGB} GB, so the smallest)`}`; who.textContent = bm.who; },
+        file: chatFile, text, convId: conv.id, history, claudeSession: conv.claudeSession, files: filesOn(), fast: spoken,
+        onText: (t) => { bm.text += t; showAnswer(ans, bm.text, { request: text, earlier, bm, conv }); bot.scrollIntoView({ block: "end" }); speech?.push(bm.text); if (spoken) micState("Answering…"); },
+        onRoute: (r) => { bm.who = `✨ Optimal picked it · for ${r.taskLabel}${r.fits ? "" : ` (nothing fits ${r.tierGB} GB, so the smallest)`}`; who.textContent = bm.who;
+          if (r.file) { bm.model = r.file; bot.querySelector(".wicon").innerHTML = window.OMD.modelIcon(r.file); bot.querySelector(".wname").textContent = window.OMD.nameOf(r.file) || r.name; } },
         onThought: (t) => { bm.thought += t; th.hidden = false; th.querySelector(".tbody").innerHTML = md(bm.thought); },
       });
       if (bm.thought) th.querySelector("summary").textContent = "Show its thinking";
@@ -296,13 +399,13 @@
       if (r && r.text && !bm.text) bm.text = r.text;
       if (bm.text) {
         // Finished: an unclosed last code block counts as done, and a file asked for in plain text becomes a file.
-        showAnswer(ans, bm.text, { request: text, final: true, earlier });
-        await writeFiles(conv, bm, ans);
-        if (bm.files?.length) showAnswer(ans, bm.text, { request: text, final: true, earlier, saved: bm.files });
+        speech?.end(bm.text);
+        showAnswer(ans, bm.text, { request: text, final: true, earlier, bm, conv, onChange: () => persist(conv) });
+        const made = await finishFiles(bot);
+        if (speech && made.length) window.Speaker.say(made.every((b) => b.path) ? `I've saved the ${made.length === 1 ? "file" : "files"} in your Documents folder.` : `I've made ${made.length === 1 ? "a file" : "some files"}. Press Save if you want to keep ${made.length === 1 ? "it" : "them"}.`, v.id);
       }
       if (bm.text) {
         bot._text = bm.text; bot.querySelector(".spk").hidden = false;
-        if (window.OMDSettings?.get().speakChat) window.Speaker.sayAll(bm.text, v.id);
       } else { bm.stopped = true; ans.innerHTML = `<span class="muted">(stopped)</span>`; }
     } catch (err) {
       bm.error = String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
@@ -311,6 +414,7 @@
       delete bm.pending;
       setBusy(false);
       persist(conv);
+      if (talk) micState(window.Speaker.speaking ? "🔊 Speaking… (Esc to stop)" : LISTENING);
     }
   });
 })();

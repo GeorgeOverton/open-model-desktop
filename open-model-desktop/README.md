@@ -195,8 +195,53 @@ Small local models often don't follow the "File: name.ext" format, so the app is
 - A changed version of a file in a later message ("now make it say goodbye") keeps the same name and updates the file.
 - A code block left unfinished when the model stops still counts.
 
+**It asks first.** Before a file is saved, its card asks "Save this file on this computer?" (Save, Always save files, Don't save).
+Before opening a file that would run code (.py, .bat, .ps1, .js and so on) it warns you and asks again (Open it, Always allow, Cancel).
+"Always" ticks a box in Settings → Saved chats; untick it to be asked again.
+
+**What it is and how to run it.** Each file card says what the file is and how to use it (for example "Needs Python… type: python hello.py"),
+and code files get the same two lines as a comment at the top, unless the model already wrote one.
+
 Ordinary questions stay ordinary: code blocks in them get Copy and Save as file. Turn files off in Settings → Saved chats.
 Test the file finder with `node` on the cases in `test/files-test.cjs`.
+
+## Talking in Chat, and saved voice chats
+Press 🎤 next to Send in Chat and just talk: when you pause, what you said is sent, the answer is read out as it's written, and then
+it listens again. Press 🎤 again (or Esc) to stop. These chats are saved like any other. Voice mode conversations are saved too (their
+titles start with 🎙️), and files work in Voice mode: it says "I'm making the file now" instead of reading code out, and the file card
+appears on screen.
+
+The app asks before it first uses the microphone (Settings → Voice mode has a box to turn it off again). Speech is turned into text on
+this computer by the offline speech pack; nothing is recorded or uploaded.
+
+**Speaking sooner:** the voice engine warms up when the app starts, the first few words are spoken as soon as they arrive, long sentences
+are split, and while answers are being spoken the model leaves two CPU cores free for the voice.
+
+## Several models at once
+With Settings → Running models ticked (the default), each model runs in its own background process, so Chat can use one model while a
+wake phrase uses another, without reloading. Before starting a model the app checks free memory; if it won't fit, it stops the model you
+used longest ago (never one that is answering) and says so in a message. If loading still runs out of memory, it stops the others and tries
+once more. My models shows Running/Stop on each model, and the sidebar lists everything that's running. Untick the box for one model at a time.
+
+## Your own names for models
+Press ✎ next to a model's name in My models and type a name (Reset goes back to the original). The name is used in Chat, Voice mode, the
+model menus, the tray and for Claude Desktop. After renaming, the app offers a matching wake phrase ("Hey Nova").
+
+## Model icons
+Answers in Chat and Voice mode show the icon of the model that wrote them (its maker's logo), and Voice mode's wake phrase list shows each
+phrase's model icon. With Optimal mode, the icon changes to the model it picked.
+
+## Voice mode: Clear and collapse
+🧹 Clear wipes the conversation on screen and starts a fresh one (the old one stays in Saved chats). The wake phrase list folds away with the
+arrow next to its title, and stays folded next time.
+
+## Uninstalling
+Uninstalling (Windows Settings → Apps) also deletes all downloaded models, voices, the speech pack and saved chats. Files the models made in
+Documents › Open Model Desktop are kept. Updating the app keeps everything.
+
+## Search page
+The "what the words mean" notes are behind the ⓘ icon at the top right. Find models always opens on Starter picks, and models too big for
+your computer (greyed out) are always listed last.
 
 ## Ideas borrowed from LM Studio's catalog
 - **Tool use** filter and badge, for models that can call tools and functions (Qwen 2.5/3, Llama 3.x, Mistral, gpt-oss and others).

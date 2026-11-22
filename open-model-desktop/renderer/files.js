@@ -202,7 +202,74 @@
     parts.push({ t: "text", s: lines.slice(0, a).join("\n") }, { t: "block", b }, { t: "text", s: lines.slice(z).join("\n") });
   }
 
-  const api = { parse, wantsFile, wantsDoc, requestName, EXT, KIND, extOf };
+  // ---------- What the file is and how to use it ----------
+  const HOWTO = {
+    py: (n) => `Needs Python (free from python.org). Double-click it, or open a terminal in its folder and type: python ${n}`,
+    pyw: () => "Needs Python (free from python.org). Double-click it to run it.",
+    js: (n) => `Needs Node.js (free from nodejs.org). Open a terminal in its folder and type: node ${n}`,
+    mjs: (n) => `Needs Node.js (free from nodejs.org). Open a terminal in its folder and type: node ${n}`,
+    ts: (n) => `TypeScript. Needs Node.js, then in a terminal in its folder type: npx tsx ${n}`,
+    html: () => "Open it and it shows in your web browser.",
+    htm: () => "Open it and it shows in your web browser.",
+    css: (n) => `A stylesheet. A web page uses it with <link rel="stylesheet" href="${n}"> (keep them in the same folder).`,
+    bat: () => "Double-click it to run it on Windows.",
+    cmd: () => "Double-click it to run it on Windows.",
+    ps1: (n) => `Right-click it and choose "Run with PowerShell", or type in PowerShell: .\\${n}`,
+    sh: (n) => `In a terminal in its folder, type: bash ${n}`,
+    vbs: () => "Double-click it to run it on Windows.",
+    csv: () => "Opens in Excel, Google Sheets or LibreOffice Calc.",
+    tsv: () => "Opens in Excel, Google Sheets or LibreOffice Calc.",
+    md: () => "A text document. Opens in Notepad or any text editor (Markdown apps show the formatting).",
+    txt: () => "Opens in Notepad or any text editor.",
+    json: () => "A data or settings file. Open it in Notepad or any text editor.",
+    yml: () => "A settings file. Open it in Notepad or any text editor.",
+    yaml: () => "A settings file. Open it in Notepad or any text editor.",
+    ini: () => "A settings file. Open it in Notepad or any text editor.",
+    toml: () => "A settings file. Open it in Notepad or any text editor.",
+    xml: () => "A data file. Open it in a text editor or a web browser.",
+    svg: () => "A picture. Open it and it shows in your web browser.",
+    sql: () => "Database commands. Run them in your database tool (for example DB Browser for SQLite or MySQL Workbench).",
+    java: (n) => `Needs Java (JDK). In a terminal in its folder type: java ${n}`,
+    c: (n) => `Compile it first, for example: gcc ${n} -o program, then run program.`,
+    cpp: (n) => `Compile it first, for example: g++ ${n} -o program, then run program.`,
+    cs: () => "C#. Put it in a .NET project (dotnet new console) and run: dotnet run",
+    go: (n) => `Needs Go (go.dev). In a terminal type: go run ${n}`,
+    rs: (n) => `Needs Rust (rustup.rs). Compile it with: rustc ${n}`,
+    rb: (n) => `Needs Ruby. In a terminal type: ruby ${n}`,
+    php: (n) => `Needs PHP. In a terminal type: php ${n}`,
+    lua: (n) => `Needs Lua. In a terminal type: lua ${n}`,
+    r: (n) => `Open it in RStudio, or type in a terminal: Rscript ${n}`,
+  };
+  const howTo = (name) => { const ext = (name.split(".").pop() || "").toLowerCase(); return (HOWTO[ext] || (() => "Open it in Notepad or any text editor."))(name); };
+  // Files that run code on the computer when opened, so the app asks first.
+  const RUNS = /\.(py|pyw|js|mjs|cjs|bat|cmd|ps1|sh|vbs|vb|exe|msi|com|scr|jar|wsf|hta|lnk|reg|rb|pl|php|lua)$/i;
+  const runsCode = (name) => RUNS.test(String(name || ""));
+  function describe(b, request) {
+    const ext = (b.name.split(".").pop() || "").toLowerCase();
+    const kind = KIND[ext] || ext.toUpperCase() + " file";
+    const r = String(request || "").replace(/\s+/g, " ").trim();
+    return r ? `${kind} made for your request: "${r.length > 90 ? r.slice(0, 87).replace(/\s+\S*$/, "") + "…" : r}"` : kind;
+  }
+  // A short note at the top of code files saying what it is and how to run it (only when the model didn't start with a comment).
+  const COMMENT = { py: "#", pyw: "#", sh: "#", rb: "#", r: "#", yml: "#", yaml: "#", toml: "#", ps1: "#", pl: "#", js: "//", mjs: "//", cjs: "//", ts: "//", jsx: "//", tsx: "//",
+    java: "//", c: "//", cpp: "//", cs: "//", go: "//", rs: "//", swift: "//", kt: "//", dart: "//", sql: "--", lua: "--", bat: "REM", cmd: "REM", ini: ";" };
+  const LOOKS_COMMENT = /^\s*(#(?!!)|\/\/|\/\*|--|<!--|REM\b|::|;|"""|''')/i;
+  function withNote(b, request) {
+    const ext = (b.name.split(".").pop() || "").toLowerCase();
+    const lines = b.content.split("\n");
+    let at = 0;
+    if (/^#!/.test(lines[0] || "") || /^\s*@echo off/i.test(lines[0] || "") || /^\s*<!doctype/i.test(lines[0] || "") || /^\s*<\?xml/.test(lines[0] || "")) at = 1;
+    if (LOOKS_COMMENT.test(lines[at] || "")) return b.content;
+    const what = describe(b, request).replace(/"/g, "'"), how = howTo(b.name);
+    let note;
+    if (COMMENT[ext]) note = [`${COMMENT[ext]} ${b.name}: ${what}`, `${COMMENT[ext]} How to run: ${how}`];
+    else if (["html", "htm", "svg", "xml"].includes(ext)) note = [`<!-- ${b.name}: ${what.replace(/--/g, "-")}. ${how.replace(/--/g, "-").replace(/[<>]/g, "")} -->`];
+    else if (ext === "css" || ext === "scss") note = [`/* ${b.name}: ${what.replace(/\*\//g, "")}. ${how.replace(/\*\//g, "")} */`];
+    else return b.content;
+    return [...lines.slice(0, at), ...note, ...lines.slice(at)].join("\n");
+  }
+
+  const api = { parse, wantsFile, wantsDoc, requestName, EXT, KIND, extOf, howTo, describe, withNote, runsCode };
   if (typeof window !== "undefined") window.OMDFiles = api;
   if (typeof module !== "undefined") module.exports = api;
 })();

@@ -52,3 +52,15 @@ console.log(r1.parts[0].s.includes("hello.py") ? "FAIL name line kept" : "PASS n
 const r2 = F.parse(`Here's your shopping list:\n\n- Rice\n- Beans\n\nLet me know if you'd like changes!`, { request: "make a shopping list file", final: true });
 console.log(r2.blocks[0]?.content === "- Rice\n- Beans\n" ? "PASS whole answer trimmed" : "FAIL whole answer " + JSON.stringify(r2.blocks[0]?.content));
 console.log(fail ? `${fail} failed` : "all passed");
+
+// What it is and how to run it, at the top of code files (only when the model didn't write its own comment).
+const note = (name, content, req) => F.withNote({ name, content }, req);
+const n1 = note("hello.py", 'print("hi")', "make a hello script");
+console.log(/^# hello\.py: Python made for your request/.test(n1) && /\n# How to run: Needs Python/.test(n1) ? "PASS python note" : "FAIL python note " + n1);
+console.log(note("add.py", "# adds numbers\nprint(1)", "x") === "# adds numbers\nprint(1)" ? "PASS keeps the model's own comment" : "FAIL own comment");
+const n3 = note("index.html", "<!DOCTYPE html>\n<h1>Hi</h1>", "make a page");
+console.log(/^<!DOCTYPE html>\n<!-- index\.html: Web page/.test(n3) ? "PASS html note after doctype" : "FAIL html " + n3);
+const n4 = note("run.sh", "#!/bin/bash\necho hi", "x");
+console.log(/^#!\/bin\/bash\n# run\.sh:/.test(n4) ? "PASS shebang stays first" : "FAIL shebang " + n4);
+console.log(note("data.csv", "a,b\n1,2", "x") === "a,b\n1,2" && note("notes.md", "# Notes", "x") === "# Notes" ? "PASS no note in data files" : "FAIL data note");
+console.log(F.runsCode("x.py") && F.runsCode("go.bat") && !F.runsCode("page.html") && !F.runsCode("list.txt") ? "PASS knows which files run code" : "FAIL runsCode");
