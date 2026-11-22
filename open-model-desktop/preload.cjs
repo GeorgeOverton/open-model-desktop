@@ -21,20 +21,13 @@ contextBridge.exposeInMainWorld("desktop", {
     install: () => ipcRenderer.invoke("update:install"),
     onStatus: on("update:status"),
   },
-  code: {
-    modes: () => ipcRenderer.invoke("code:modes"),
-    pickFolder: () => ipcRenderer.invoke("code:pickFolder"),
-    send: (a) => ipcRenderer.invoke("code:send", a),
-    answer: (a) => ipcRenderer.invoke("code:answer", a),
-    stop: (id) => ipcRenderer.invoke("code:stop", id),
-    open: (f) => ipcRenderer.invoke("code:open", f),
-    onEvent: on("code:event"), onApprove: on("code:approve"),
-  },
   files: {
     write: (a) => ipcRenderer.invoke("files:write", a),
     open: (p) => ipcRenderer.invoke("files:open", p),
     reveal: (p) => ipcRenderer.invoke("files:reveal", p),
     saveAs: (a) => ipcRenderer.invoke("files:saveAs", a),
+    openFolder: () => ipcRenderer.invoke("files:openFolder"),
+    where: () => ipcRenderer.invoke("files:where"),
   },
   chats: {
     list: () => ipcRenderer.invoke("chats:list"),

@@ -17,7 +17,6 @@
         <button role="tab" data-view="online" aria-selected="false"><span>🌐</span> Online models</button>
         <button role="tab" data-view="chat" aria-selected="false"><span>💬</span> Chat</button>
         <button role="tab" data-view="voice" aria-selected="false"><span>🎙️</span> Voice</button>
-        <button role="tab" data-view="code" aria-selected="false"><span>🛠️</span> Claude Code</button>
         <button role="tab" data-view="settings" aria-selected="false"><span>⚙️</span> Settings</button>
       </nav>
       <div class="engine small" id="engineStatus">No model loaded</div>
@@ -126,25 +125,6 @@
         </div>
       </section>
 
-      <!-- CLAUDE CODE -->
-      <section class="view chatview codeview" id="view-code" hidden>
-        <div class="chatmain">
-        <div class="chatbar codebar">
-          <button class="btn sm" id="codeFolder" type="button">📁 Choose a folder…</button>
-          <span id="codePath" class="small muted codepath"></span>
-          <label class="small" for="codeMode">Mode</label>
-          <select id="codeMode"></select>
-          <button class="btn sm" id="codeNew" type="button">New task</button>
-        </div>
-        <div class="messages" id="codeLog" aria-live="polite"></div>
-        <form class="composer" id="codeForm">
-          <textarea id="codePrompt" rows="1" placeholder="Ask Claude to do something with the files in this folder…" aria-label="Ask Claude Code"></textarea>
-          <button class="btn primary" id="codeSend" type="submit">Send</button>
-          <button class="btn" id="codeStop" type="button" hidden>Stop</button>
-        </form>
-        </div>
-      </section>
-
       <!-- VOICE -->
       <section class="view" id="view-voice" hidden>
         <header class="hero">
@@ -227,7 +207,9 @@
           <h2>Saved chats</h2>
           <div class="way">
             <label class="toggle inline"><input type="checkbox" id="saveChats"> Save my chats on this computer</label>
-            <label class="toggle inline"><input type="checkbox" id="makeFiles"> Let models make files you can open and save (code, documents, lists, web pages)</label>
+            <label class="toggle inline"><input type="checkbox" id="makeFiles"> Let models make real files (code, documents, lists, web pages, spreadsheets)</label>
+            <p class="small muted">When you ask any model for a file, it's saved in <b id="filesWhere">Documents › Open Model Desktop</b>, in a folder for each chat. Deleting a chat keeps its files.
+              <button class="linkish" id="openFilesFolder">Open the files folder</button></p>
             <p class="small muted">Every conversation in Chat is kept in a folder on this computer, so you can open it again from the list on the left of Chat. Nothing is uploaded. Voice mode conversations aren't saved.</p>
             <p class="small"><button class="linkish" id="openChatsFolder">Open the folder where chats are saved</button>
               · <span id="delAllWrap"><button class="linkish danger" id="delAllChats">Delete all saved chats</button></span></p>
@@ -280,9 +262,9 @@
   <script src="vendor/vosk.js"></script>
   <script src="speaker.js"></script>
   <script src="app.js"></script>
+  <script src="files.js"></script>
   <script src="chat.js"></script>
   <script src="settings.js"></script>
   <script src="voice.js"></script>
-  <script src="code.js"></script>
 </body>
 </html>

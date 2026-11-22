@@ -12,15 +12,7 @@ const LAUNCH = (() => { try { return JSON.parse(process.env.OMD_LAUNCH || "null"
 const VERSION = process.env.OMD_VERSION || "0.0.0";
 const log = (...a) => process.stderr.write("[open-model-desktop] " + a.join(" ") + "\n");
 
-// In Claude Code mode the app starts this program with OMD_APPROVER set: it then only offers the "approve" tool,
-// which Claude Code calls before it edits a file or runs a command, so you can say yes or no in the app.
-const APPROVER = process.env.OMD_APPROVER || "";
-const APPROVE_TOOL = {
-  name: "approve",
-  description: "Asks the user in Open Model Desktop whether Claude Code may use a tool.",
-  inputSchema: { type: "object", properties: { tool_name: { type: "string" }, input: { type: "object" }, tool_use_id: { type: "string" } }, required: ["tool_name"] },
-};
-const TOOLS = APPROVER ? [APPROVE_TOOL] : [
+const TOOLS = [
   {
     name: "list_local_models",
     description: "List the AI models downloaded in Open Model Desktop on this computer, with their size and which one is running now. These models run fully offline on the user's own computer.",
@@ -97,13 +89,6 @@ async function bridge() {
 }
 
 async function runTool(name, args = {}) {
-  if (APPROVER) {
-    if (name !== "approve") throw new Error("Unknown tool: " + name);
-    const b = readBridge();
-    if (!b) return JSON.stringify({ behavior: "deny", message: "Open Model Desktop isn't running, so nobody could approve this." });
-    const r = await call(b, "POST", "/approve", { run: APPROVER, tool: String(args.tool_name || ""), input: args.input || {} }, 24 * 3600 * 1000);
-    return JSON.stringify(r.allow ? { behavior: "allow", updatedInput: args.input || {} } : { behavior: "deny", message: r.message || "The user said no." });
-  }
   const b = await bridge();
   if (name === "list_local_models") {
     const r = await call(b, "GET", "/models", null, 10000);

@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createClaude, createCoder, CODE_MODES, CLAUDE_FILE, CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL, CHAT_PROMPT } from "./claude.mjs";
+import { createClaude, CLAUDE_FILE, CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL, CHAT_PROMPT } from "./claude.mjs";
 import { TASKS, TIERS, guessTask, parseTask, ROUTER_PROMPT, pickRouter, pickModel as pickBest } from "./router.mjs";
 import electronUpdater from "electron-updater";
 
@@ -233,19 +233,42 @@ ipcMain.handle("chats:rename", queued(async (_e, id, title) => {
   await writeJSON(chatFile(id), c);
   return chatSummary(c);
 }));
+// Deleting a chat keeps the files it made (they're your files in Documents). Files from older versions, kept inside the app's data, go with it.
 ipcMain.handle("chats:delete", queued(async (_e, id) => { await fsp.rm(chatFile(id), { force: true }); await fsp.rm(path.join(filesDir(), path.basename(chatFile(id), ".json")), { recursive: true, force: true }); }));
 ipcMain.handle("chats:deleteAll", queued(async () => { await fsp.rm(chatsDir(), { recursive: true, force: true }); await fsp.rm(filesDir(), { recursive: true, force: true }); }));
 
-// ---------- Files that models make in Chat: kept in userData/files/<chat id>/ ----------
-const safeFileName = (n) => (String(n).split(/[\\/]/).pop().replace(/[<>:"|?*\x00-\x1f]/g, "_").replace(/^\.+/, "").slice(0, 120)) || "file.txt";
-const insideFiles = (p) => { const r = path.resolve(p); if (!r.startsWith(path.resolve(filesDir()) + path.sep)) throw new Error("Not one of the app's files"); return r; };
-ipcMain.handle("files:write", async (_e, { chatId, name, content }) => {
-  const dir = path.join(filesDir(), /^[a-z0-9]{6,40}$/.test(String(chatId)) ? chatId : "unsaved");
+// ---------- Files that models make in Chat: real files in Documents\Open Model Desktop\<date> <chat title>\ ----------
+const outRoot = () => { let d; try { d = app.getPath("documents"); } catch { d = app.getPath("home"); } return path.join(d, "Open Model Desktop"); };
+const folderIndex = () => path.join(dataDir(), "file-folders.json");
+const safeFileName = (n) => (String(n).split(/[\\/]/).pop().replace(/[<>:"|?*\x00-\x1f]/g, "_").replace(/^[.\s]+|[.\s]+$/g, "").slice(0, 120)) || "file.txt";
+const insideFiles = (p) => {
+  const r = path.resolve(p);
+  if (![outRoot(), filesDir()].some((d) => r.startsWith(path.resolve(d) + path.sep))) throw new Error("Not one of the app's files");
+  return r;
+};
+// One folder per chat, named when the chat makes its first file, and kept even if the chat is renamed later.
+const chatFolder = queued(async (chatId, title) => {
+  const idx = await readJSON(folderIndex(), {});
+  const id = /^[a-z0-9]{6,40}$/.test(String(chatId)) ? String(chatId) : "unsaved";
+  if (idx[id]) return path.join(outRoot(), idx[id]);
+  const day = new Date(); const date = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+  const t = String(title || "").replace(/[<>:"/\\|?*\x00-\x1f…]/g, " ").replace(/\s+/g, " ").trim().slice(0, 50).replace(/[.\s]+$/, "");
+  const nameBase = id === "unsaved" ? "Unsaved chats" : `${date} ${t || "Chat"}`;
+  let name = nameBase;
+  for (let n = 2; id !== "unsaved" && (Object.values(idx).includes(name) || fs.existsSync(path.join(outRoot(), name))); n++) name = `${nameBase} (${n})`;
+  idx[id] = name; await writeJSON(folderIndex(), idx);
+  return path.join(outRoot(), name);
+});
+ipcMain.handle("files:write", async (_e, { chatId, title, name, content }) => {
+  const dir = await chatFolder(chatId, title);
   await fsp.mkdir(dir, { recursive: true });
   const file = path.join(dir, safeFileName(name));
-  await fsp.writeFile(file, String(content));
+  const text = String(content);
+  await fsp.writeFile(file, text && !text.endsWith("\n") ? text + "\n" : text);
   return file;
 });
+ipcMain.handle("files:openFolder", async () => { await fsp.mkdir(outRoot(), { recursive: true }); shell.openPath(outRoot()); });
+ipcMain.handle("files:where", () => outRoot());
 ipcMain.handle("files:open", async (_e, p) => { const err = await shell.openPath(insideFiles(p)); if (err) throw new Error(err); });
 ipcMain.handle("files:reveal", (_e, p) => shell.showItemInFolder(insideFiles(p)));
 ipcMain.handle("files:saveAs", async (_e, { name, content }) => {
@@ -619,9 +642,11 @@ ipcMain.handle("chat:unload", () => { if (claudeOn) { claude.stop(); claudeStatu
 ipcMain.handle("chat:reset", (_e, systemPrompt) => { claude.reset(systemPrompt ?? null); return engine.proc && engine.call("reset", { systemPrompt: systemPrompt ?? null }); });
 ipcMain.handle("chat:stop", () => { claude.stop(); engine.proc?.postMessage({ op: "stop" }); });
 // Added to the instructions in Chat, so models put files they make where the app can find them.
-const FILES_PROMPT = "When the user asks you to create, write or make a file (code, a document, a list, a web page, a spreadsheet as CSV and so on), " +
-  "write a line 'File: name.ext' with a sensible file name, then put the whole file in a code block straight after it. Use one code block per file. " +
-  "For everything else, answer normally.";
+// Small models follow an example better than a rule, so there is one. The app is forgiving when they don't (see renderer/files.js).
+const FILES_PROMPT = "When the user asks you to create, write or make a file (code, a script, a document, a list, a letter, a web page, a spreadsheet as CSV and so on), " +
+  "the app saves it as a real file for them. Write a line 'File: name.ext' with a short sensible file name, then put the whole file in a code block straight after it, " +
+  "with nothing left out. Use one code block per file. For example:\nFile: hello.py\n```python\nprint(\"Hello\")\n```\n" +
+  "Don't tell the user to copy and paste it, because the app saves it for them. For everything else, answer normally.";
 ipcMain.handle("chat:send", async (_e, { text, file, systemPrompt, turnId, convId = null, history = null, claudeSession = null, fast = false, files = false }) => {
   if (files) systemPrompt = (systemPrompt || (file === CLAUDE_FILE ? CHAT_PROMPT : "")) + (systemPrompt || file === CLAUDE_FILE ? " " : "") + FILES_PROMPT;
   if (file === CLAUDE_FILE) {
@@ -749,10 +774,6 @@ async function startBridge() {
         send("claude:activity", { kind: "done", model: m.name });
         return out(200, { text: r.text, model: m.name });
       }
-      if (req.method === "POST" && route === "/approve") {
-        const b = await readBody(req);
-        return out(200, await codeApprove(String(b.run || ""), String(b.tool || ""), b.input || {}));
-      }
       if (req.method === "POST" && route === "/say") {
         const b = await readBody(req);
         send("claude:say", { text: String(b.text || "").slice(0, 20000), voice: String(b.voice || "") });
@@ -766,61 +787,6 @@ async function startBridge() {
   await fsp.mkdir(dataDir(), { recursive: true });
   await fsp.writeFile(bridgeFile(), JSON.stringify({ port: bridgeServer.address().port, token, pid: process.pid }), { mode: 0o600 });
 }
-
-// ---------- Claude Code mode ----------
-const codeRuns = new Map();      // runId -> { folder }
-const codeAsks = new Map();      // approval id -> { resolve, run }
-const codeAlways = new Set();    // "folder|kind" you said "always allow" to, until the app closes
-const coder = createCoder({
-  getModel: async () => (await getSettings()).claudeModel || "",
-  onEvent: (runId, ev) => send("code:event", { runId, ...ev }),
-  mcpConfig: (runId) => ({ mcpServers: { omd: { command: process.execPath, args: [mcpScript()], env: { ELECTRON_RUN_AS_NODE: "1", OMD_BRIDGE: bridgeFile(), OMD_APPROVER: runId } } } }),
-});
-const EDIT_TOOLS = /^(Edit|MultiEdit|Write|NotebookEdit)$/;
-const alwaysKey = (folder, tool, input) => folder + "|" + (EDIT_TOOLS.test(tool) ? "edits" : tool === "Bash" ? "Bash:" + String(input.command || "").trim().split(/\s+/)[0] : tool);
-function codeApprove(runId, tool, input) {
-  const run = codeRuns.get(runId);
-  if (!run) return { allow: false, message: "That task was stopped." };
-  if (codeAlways.has(alwaysKey(run.folder, tool, input))) return { allow: true };
-  const id = crypto.randomBytes(6).toString("hex");
-  return new Promise((resolve) => {
-    codeAsks.set(id, { resolve, run: runId, folder: run.folder, tool, input });
-    send("code:approve", { id, runId, tool, input, folder: run.folder });
-    if (win && !win.isFocused()) notify("Claude wants to make a change", `Claude Code is waiting for you to allow ${tool === "Bash" ? "a command" : "a file change"}.`);
-  });
-}
-ipcMain.handle("code:modes", () => CODE_MODES);
-ipcMain.handle("code:pickFolder", async () => {
-  const r = await dialog.showOpenDialog(win, { title: "Choose the folder Claude can work in", properties: ["openDirectory", "createDirectory"] });
-  return r.canceled ? null : r.filePaths[0];
-});
-ipcMain.handle("code:send", async (_e, { runId, folder, text, mode, resume }) => {
-  await requireClaude();
-  codeRuns.set(runId, { folder });
-  try {
-    const r = await coder.send({ runId, folder, text, mode, resume });
-    if (claudeLimit) { claudeLimit = ""; if (claudeOn) claudeStatus(true); }
-    return r;
-  } catch (err) {
-    if (err.limit) { claudeLimit = err.resets || "later"; if (claudeOn) claudeStatus(true); notify("Claude plan limit reached", err.message); }
-    throw err;
-  } finally {
-    codeRuns.delete(runId);
-    for (const [id, a] of codeAsks) if (a.run === runId) { codeAsks.delete(id); a.resolve({ allow: false, message: "The task ended." }); }
-  }
-});
-ipcMain.handle("code:answer", (_e, { id, decision, message }) => {
-  const a = codeAsks.get(id); if (!a) return false;
-  codeAsks.delete(id);
-  if (decision === "always") codeAlways.add(alwaysKey(a.folder, a.tool, a.input));
-  a.resolve(decision === "deny" ? { allow: false, message: message || "The user said no. Ask them what they'd like instead." } : { allow: true });
-  return true;
-});
-ipcMain.handle("code:stop", (_e, runId) => {
-  coder.stop(runId);
-  for (const [id, a] of codeAsks) if (a.run === runId) { codeAsks.delete(id); a.resolve({ allow: false, message: "Stopped by the user." }); }
-});
-ipcMain.handle("code:open", (_e, folder) => shell.openPath(folder));
 
 // Where the Claude app keeps its list of tools (connectors). The Microsoft Store version of Claude keeps it in its own folder.
 function claudeConfigFiles() {

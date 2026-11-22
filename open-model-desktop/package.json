@@ -1,14 +1,15 @@
 {
   "name": "open-model-desktop",
   "productName": "Open Model Desktop",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Find, download and chat with open AI models offline, with voice wake phrases.",
   "type": "module",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --publish never",
-    "release": "electron-builder --win --x64 --publish always"
+    "release": "electron-builder --win --x64 --publish always",
+    "test": "node test/files-test.cjs"
   },
   "dependencies": {
     "electron-updater": "6.8.12",

@@ -69,6 +69,8 @@
   $("#saveChats").addEventListener("change", async (e) => { await save({ saveChats: e.target.checked }); toast(e.target.checked ? "Chats will be saved on this computer." : "New chats won't be saved. Chats you already saved are kept until you delete them.", 4500); });
   $("#openChatsFolder").addEventListener("click", () => D.chats.openFolder());
   $("#makeFiles").addEventListener("change", (e) => save({ makeFiles: e.target.checked }));
+  $("#openFilesFolder").addEventListener("click", () => window.desktop.files.openFolder());
+  window.desktop.files.where().then((p) => { if (p) $("#filesWhere").textContent = p; }).catch(() => {});
   $("#delAllWrap").addEventListener("click", async (e) => {
     const act = e.target.closest("button")?.id;
     const wrap = $("#delAllWrap");

@@ -495,41 +495,6 @@ dialog#newModels[open] { display: flex; flex-direction: column; }
 .codeblock:hover .cbar, .codeblock:focus-within .cbar { opacity: 1; }
 .cbtn2 { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
 
-/* v0.9: Claude Code mode */
-.codeview .chatmain { padding-left: 0; }
-.codebar select { flex: 0 1 200px; }
-.codepath { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.codeintro { max-width: 680px; margin: 24px auto; }
-.codeintro h2 { margin: 0 0 8px; }
-.codeintro .recentf { margin: 4px 4px 0 0; }
-.tcard { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; max-width: 92%; overflow: hidden; }
-.tcard.asking { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.tcard.failed { border-color: var(--bad); }
-.thead { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 14.5px; }
-.ticon { width: 22px; text-align: center; }
-.ttitle { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.tcard.done .tstate { color: var(--great); }
-.tcard.failed .tstate { color: var(--bad); }
-.tbody { border-top: 1px solid var(--line); max-height: 340px; overflow: auto; }
-.tbody pre { margin: 0; border: 0; border-radius: 0; }
-.diff { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; }
-.diff .dln { white-space: pre-wrap; padding: 0 10px; overflow-wrap: anywhere; }
-.diff .dln span { display: inline-block; width: 16px; color: var(--muted); user-select: none; }
-.diff .del { background: color-mix(in srgb, var(--bad) 14%, transparent); }
-.diff .add { background: color-mix(in srgb, var(--great) 16%, transparent); }
-pre.cmd { background: #15151d; color: #e8e8f0; }
-.todos { list-style: none; margin: 0; padding: 8px 14px; font-size: 14px; }
-.todos li.completed { color: var(--muted); text-decoration: line-through; }
-.plan { padding: 8px 14px; font-size: 14.5px; }
-.tapprove { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--accent-soft); }
-.tapprove .abtns { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
-.tinstead { flex-basis: 100%; font: inherit; font-size: 13.5px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
-.tout summary { cursor: pointer; padding: 6px 12px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); }
-.tout pre { margin: 0; border: 0; border-radius: 0; max-height: 260px; overflow: auto; font-size: 12.5px; }
-.codedone { align-self: flex-start; }
-.codetext { max-width: 92%; }
-.tbody pre { padding: 8px 12px; }
-
 /* v0.10: size chips per family (one card per model family) */
 .sizes { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 2px; }
 .szchip { font: inherit; font-size: 12.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); color: var(--text); cursor: pointer; }

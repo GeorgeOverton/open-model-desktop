@@ -180,18 +180,23 @@ Voice mode now starts talking at the first comma of an answer instead of waiting
 the moment it hears the wake phrase (while you're still asking), and skips the "thinking" step of thinking models.
 
 ## Files in Chat
-Ask any model to make a file ("make me a shopping list", "write a Python script that…", "make a web page for…") and it appears as a
-file card under the answer, with **Open**, **Save as…** and **Copy**. Files are kept in the app's `files` folder, next to the chat they
-came from, and deleted with that chat. Any other code block also gets Copy and Save as file. Turn it off in Settings → Saved chats.
+Ask any model, local or Claude, to make a file ("make me a shopping list file", "write a Python script that…", "make a web page for…")
+and it's saved as a real file in **Documents › Open Model Desktop**, in a folder for each chat (named by date and the chat's title).
+It shows as a file card under the answer with **Open**, **Show in folder**, **Save as…** and **Copy**. Deleting a chat keeps its files.
 
-## Claude Code
-The **🛠️ Claude Code** page works like the Claude Code extension for VS Code: choose a folder, ask for a change, and Claude reads the
-files and works on them. Before each file change or command it shows you exactly what it wants to do (changes as a red and green diff)
-with **Allow**, **Always allow** and **Don't allow** (you can also type what to do instead). Modes: *Ask before changes* (default),
-*Allow file edits* and *Plan only*. It uses the official Claude Code on your Claude Pro plan (set up in Settings → Claude on your Pro plan),
-never an API key, and carries on your last task in each folder until you press New task.
-How it works: the app runs `claude -p` in that folder with `--permission-prompt-tool`, pointing at the `approve` tool of `mcp-server.mjs`,
-which asks the app over its private local connection.
+Small local models often don't follow the "File: name.ext" format, so the app is forgiving (see `renderer/files.js`):
+
+- It finds the name wherever the model put it: `File: x.py`, `**x.py**`, `` `x.py` ``, `### x.py`, "Save this as x.py:", the code block's
+  info line (```` ```python app.py ````), or a first-line comment like `# x.py` or `<!-- index.html -->`.
+- If you asked for a file and the model didn't name it, it picks a name from your request (or the file name you gave) and the kind of code.
+  One-line commands like `python hello.py` are left as snippets.
+- If you asked for a document (a letter, a CSV, a notes file…) and the model just wrote it out as text, the answer itself is saved,
+  without the "Here's your…" and "Let me know…" lines.
+- A changed version of a file in a later message ("now make it say goodbye") keeps the same name and updates the file.
+- A code block left unfinished when the model stops still counts.
+
+Ordinary questions stay ordinary: code blocks in them get Copy and Save as file. Turn files off in Settings → Saved chats.
+Test the file finder with `node` on the cases in `test/files-test.cjs`.
 
 ## Ideas borrowed from LM Studio's catalog
 - **Tool use** filter and badge, for models that can call tools and functions (Qwen 2.5/3, Llama 3.x, Mistral, gpt-oss and others).
