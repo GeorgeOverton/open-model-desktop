@@ -90,6 +90,7 @@
     if (/embed|bge|e5-|gte-/.test(s) || m.pipeline_tag === "feature-extraction" || m.pipeline_tag === "sentence-similarity") t.add("embeddings");
     if (/aya|multilingual|qwen|gemma|mistral-nemo/.test(s)) t.add("multilingual");
     if (/story|writer|creative|roleplay|rp\b/.test(s)) t.add("writing");
+    if (/qwen2\.5|qwen3|llama-3\.[123]|llama-4|mistral|devstral|magistral|gpt-oss|hermes|functionary|command-r|granite|glm-4|kimi|tool|function/.test(s) && !t.has("embeddings")) t.add("tools");
     if (!t.has("embeddings") && (/instruct|chat|-it\b|-it-|conversational|text-generation/.test(s) || m.pipeline_tag === "text-generation")) t.add("chat");
     if (params && params <= 4.5) t.add("tiny");
     return [...t];
@@ -160,6 +161,7 @@
     { id: "trending", label: "Trending now", tabs: ["search"], server: "trendingScore" },
     { id: "likes", label: "Most liked", tabs: ["search"], server: "likes" },
     { id: "newest", label: "Newest", tabs: ["search"], server: "createdAt" },
+    { id: "recent", label: "Recently added", tabs: ["starter"] },
     { id: "small", label: "Smallest first", tabs: ["starter", "search"] },
     { id: "large", label: "Biggest (smartest) first", tabs: ["starter", "search"] },
     { id: "name", label: "Name A to Z", tabs: ["starter", "search"] },
@@ -178,12 +180,46 @@
       small: (a, b) => size(a) - size(b),
       large: (a, b) => (b.sizeGB ?? -1) - (a.sizeGB ?? -1),
       name: (a, b) => a.name.localeCompare(b.name),
+      recent: (a, b) => (b.userAdded || 0) - (a.userAdded || 0) || newness(b) - newness(a),
     }[state.sort[state.tab]];
     const tagRank = (a, b) => (state.tags.size > 1 ? matches(b) - matches(a) : 0);
     // Server sorts keep Hugging Face's order (only tag matches move a model up).
     list = [...list].sort((a, b) => tagRank(a, b) || (by ? by(a, b) : 0));
     return list;
   }
+  const newness = (m) => (m.released ? Date.parse(m.released) : m.created || 0);
+  // "3 months ago", like LM Studio shows.
+  const ago = (t) => {
+    const d = Math.floor((Date.now() - t) / 864e5);
+    if (d < 1) return "today"; if (d < 2) return "yesterday"; if (d < 30) return `${d} days ago`;
+    const mo = Math.round(d / 30.44); if (mo < 12) return `${mo} month${mo === 1 ? "" : "s"} ago`;
+    const y = +(d / 365.25).toFixed(1); return `${String(y).replace(/\.0$/, "")} year${y === 1 ? "" : "s"} ago`;
+  };
+
+  // ---------- One card per model family (Llama 3.2 1B and 3B share a card), with a size chip for each ----------
+  const familyKey = (m) => ((makerOf(m) || m.maker || "") + "|" + m.name.replace(/[\s-]*\b\d+(?:\.\d+)?\s*[BM]\b(?:-A\d+(?:\.\d+)?B)?/gi, "").replace(/\s+/g, " ").trim()).toLowerCase();
+  state.pick = {};
+  // The size picked for you: the biggest that runs great, else the biggest that fits, else the smallest.
+  function bestSize(members) {
+    const by = [...members].sort((a, b) => (a.params || a.sizeGB || 0) - (b.params || b.sizeGB || 0));
+    const cls = (m) => fitFor(m.ramGB).cls;
+    return [...by].reverse().find((m) => cls(m) === "great") || [...by].reverse().find((m) => cls(m) === "ok") || by[0];
+  }
+  function families(list) {
+    const groups = new Map();
+    for (const m of list) { const k = familyKey(m); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(m); }
+    const pos = new Map(list.map((m, i) => [m, i]));
+    return [...groups.entries()].map(([key, members]) => {
+      members.sort((a, b) => (a.params || a.sizeGB || 0) - (b.params || b.sizeGB || 0));
+      const m = members.find((x) => x.id === state.pick[key]) || bestSize(members);
+      return { key, members, m };
+    }).sort((a, b) => pos.get(a.m) - pos.get(b.m));
+  }
+  const sizeChips = (g) => g.members.length < 2 ? "" : `<div class="sizes" role="group" aria-label="Sizes">${g.members.map((x) => {
+    const f = fitFor(x.ramGB);
+    return `<button class="szchip ${f.cls}" type="button" data-pick="${esc(x.id)}" data-fam="${esc(g.key)}" aria-pressed="${x === g.m}" title="${esc(paramLabel(x) + ": " + f.label + (x.sizeGB ? `, about ${fmtGB(x.sizeGB)}` : ""))}">${esc(paramLabel(x) || x.name)}</button>`;
+  }).join("")}</div>`;
+
   const tagHtml = (tags) => (tags || []).map((t) => TAGS[t] ? `<span class="tag" title="${esc(TAGS[t].hint)}">${TAGS[t].emoji} ${esc(TAGS[t].label)}</span>` : "").join("");
   const haveRepo = (id) => state.mine.some((m) => m.repo === id);
 
@@ -211,7 +247,7 @@
   const roundMem = (g) => (g < 2 ? Math.ceil(g * 2) / 2 : Math.ceil(g));
   const fitDot = (m) => { const f = fitFor(m.ramGB); return `<span class="fitnote ${f.cls}" title="${esc(f.why)}">${f.cls === "great" ? "✓ Fits your computer" : f.cls === "ok" ? "Tight fit" : f.cls === "bad" ? "Too big for you" : ""}</span>`; };
 
-  function card(m) {
+  function card(m, g = { members: [m], m }) {
     const embed = m.tags.includes("embeddings");
     const btn = haveRepo(m.id) ? `<span class="got">✓ Downloaded</span>`
       : `<button class="btn primary sm" data-open="${esc(m.id)}">${embed ? "Details" : "Download"}</button>`;
@@ -219,9 +255,11 @@
     return `<article class="card mcard ${big ? "toobig" : ""}" tabindex="0" data-open="${esc(m.id)}" aria-label="${esc(m.name)}${big ? " (too big for your computer)" : ""}">
       ${tile(m)}
       <div class="info">
-        <h3>${esc(m.name)}</h3>
+        <h3>${esc(m.name)}${m.userAdded ? ` <span class="pill added" title="You added this from Find new models">Added</span>` : ""}</h3>
         <div class="use">${esc(m.use || m.blurb)}</div>
-        ${m.downloads != null ? `<div class="small muted stats">⬇ ${fmtNum(m.downloads)} downloads${m.likes ? ` · ♥ ${fmtNum(m.likes)}` : ""}${m.created ? ` · added ${fmtWhen(m.created)}` : ""}${m.dupes ? ` · <span title="Other people have uploaded copies of this model too. We show the most popular one.">+${m.dupes} copies</span>` : ""}</div>` : ""}
+        ${sizeChips(g)}
+        ${m.downloads == null ? `<div class="small muted stats">${m.userAdded ? `Added by you ${ago(m.userAdded)}` : ""}${m.userAdded && newness(m) ? " · " : ""}${newness(m) ? `Released ${ago(newness(m))}` : ""}</div>` : ""}
+        ${m.downloads != null ? `<div class="small muted stats">⬇ ${fmtNum(m.downloads)} downloads${m.likes ? ` · ♥ ${fmtNum(m.likes)}` : ""}${m.created ? ` · uploaded ${ago(m.created)}` : ""}${m.dupes ? ` · <span title="Other people have uploaded copies of this model too. We show the most popular one.">+${m.dupes} copies</span>` : ""}</div>` : ""}
         ${fitDot(m)}
         <div class="foot">${pill(levelOf(m.sizeGB, m))}${btn}</div>
       </div>
@@ -233,11 +271,13 @@
     const g = $("#grid");
     if (state.tab === "search" && state.loading) { g.innerHTML = ""; return; }
     if (!list.length) g.innerHTML = `<div class="empty">No models match those choices. Try removing a filter${state.hideTooBig ? " or showing models that are too big" : ""}.</div>`;
-    else g.innerHTML = list.map(card).join("");
+    else { const fams = families(list); g.innerHTML = fams.map((f) => card(f.m, f)).join(""); state.cardsShown = fams.length; }
     const sortLabel = SORTS.find((o) => o.id === state.sort[state.tab])?.label.toLowerCase() || "";
     const big = list.filter((m) => fitFor(m.ramGB).cls === "bad").length;
     const bigNote = big && !state.hideTooBig ? ` ${big} greyed out ${big === 1 ? "is" : "are"} too big for ${state.ram === 8 ? "an" : "a"} ${state.ram} GB computer.` : "";
-    if (state.tab === "starter") setStatus(`${list.length} hand-picked models, sorted by ${sortLabel}.${bigNote}`);
+    const fams = state.cardsShown ?? list.length;
+    const sizesNote = fams < list.length ? ` Models that come in several sizes share a card: the size picked for you is highlighted, and you can click another.` : "";
+    if (state.tab === "starter") setStatus(`${list.length} hand-picked models in ${fams} families, sorted by ${sortLabel}.${bigNote}${sizesNote}`);
     else if (!state.error) setStatus(`${list.length} models${state.query ? ` for "${state.query}"` : state.tags.size ? " of the kinds you picked" : ""}, sorted by ${sortLabel}.${bigNote} Sizes are estimates until you open a model.`);
     $("#clearFilters").hidden = !state.tags.size;
   }
@@ -246,6 +286,8 @@
   $("#grid").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.dataset.open) e.target.click(); });
   $("#grid").addEventListener("click", (e) => {
     if (e.target.closest("a")) return;
+    const chip = e.target.closest("[data-pick]");
+    if (chip) { e.stopPropagation(); state.pick[chip.dataset.fam] = chip.dataset.pick; renderGrid(); document.querySelector(`.szchip[data-pick="${CSS.escape(chip.dataset.pick)}"]`)?.focus(); return; }
     const b = e.target.closest("[data-open]"); if (!b) return;
     const m = window.STARTER_MODELS.find((x) => x.id === b.dataset.open) || state.results.find((x) => x.id === b.dataset.open);
     if (m) openDetail(m);
@@ -256,6 +298,7 @@
     coding: [{ search: "coder" }], vision: [{ pipeline_tag: "image-text-to-text" }], reasoning: [{ search: "reasoning" }, { search: "r1" }, { search: "thinking" }],
     embeddings: [{ search: "embed" }], writing: [{ search: "writer" }, { search: "story" }], multilingual: [{ search: "multilingual" }, { search: "aya" }],
     tiny: [{ search: "1b" }, { search: "3b" }, { search: "mini" }], chat: [{ pipeline_tag: "text-generation" }],
+    tools: [{ search: "qwen3" }, { search: "tool" }, { search: "function" }],
   };
   let searchSeq = 0;
   async function search(q) {
@@ -294,6 +337,89 @@
       setStatus("Couldn't reach Hugging Face. Check your internet connection. Your downloaded models still work offline.");
     }
     state.loading = false; renderGrid();
+  }
+
+  // ---------- Find new models: look online, tick the ones you want, add them to Starter picks ----------
+  let found = [];
+  const qa = (sel) => [...document.querySelectorAll(sel)];
+  function addUserModels(list) {
+    for (const m of list || []) {
+      if (window.STARTER_MODELS.some((x) => x.id === m.id)) continue;
+      window.STARTER_MODELS.push({ ...m, ramGB: m.sizeGB ? ramFromFile(m.sizeGB) : null });
+    }
+  }
+  async function findNewModels() {
+    const dlg = $("#newModels");
+    found = [];
+    $("#nmBody").innerHTML = `<p class="muted">Looking on Hugging Face for new models…</p>`;
+    $("#nmAll").checked = false; nmCount();
+    if (!dlg.open) dlg.showModal();
+    const known = new Set(window.STARTER_MODELS.map((m) => baseKey(m.id)));
+    try {
+      const ask = async (sort) => { const r = await fetch(`${HF}/api/models?` + new URLSearchParams({ filter: "gguf", sort, direction: "-1", limit: "100" })); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); };
+      const pages = await Promise.all(["trendingScore", "downloads", "likes"].map(ask));
+      const byBase = new Map();
+      for (const raw of pages.flat()) {
+        if (JUNK.test(raw.id)) continue;
+        const k = baseKey(raw.id);
+        if (known.has(k)) continue;
+        const cur = byBase.get(k);
+        if (!cur || (raw.downloads || 0) > (cur.downloads || 0)) byBase.set(k, { ...raw, trendingScore: Math.max(raw.trendingScore || 0, cur?.trendingScore || 0) });
+      }
+      found = [...byBase.values()].map(fromSearch)
+        .filter((m) => !m.tags.includes("embeddings") && m.params && (m.downloads || 0) >= 500)
+        .sort((a, b) => (b.trend - a.trend) || (b.downloads - a.downloads)).slice(0, 40);
+      if (!found.length) { $("#nmBody").innerHTML = `<p>Nothing new right now. Your Starter picks already have the popular models. Try again in a week or two.</p>`; nmCount(); return; }
+      const recent = Date.now() - 90 * 864e5;
+      $("#nmBody").innerHTML = `<div class="nmlist">${found.map((m, i) => `
+        <label class="nmrow">
+          <input type="checkbox" data-i="${i}">
+          ${tile(m)}
+          <span class="nminfo"><span><strong>${esc(m.name)}</strong>${m.created && m.created > recent ? ` <span class="pill new">New</span>` : ""}</span>
+            <span class="small muted">${esc(makerOf(m) || m.maker)} · ${esc(paramLabel(m))} · about ${fmtGB(m.sizeGB)} · ⬇ ${fmtNum(m.downloads)}${m.created ? ` · ${fmtWhen(m.created)}` : ""}</span>
+            <span class="tags">${tagHtml(m.tags)}</span></span>
+          <span class="fitnote ${fitFor(m.ramGB).cls}">${{ great: "✓ Fits", ok: "Tight fit", bad: "Too big", unknown: "" }[fitFor(m.ramGB).cls]}</span>
+        </label>`).join("")}</div>`;
+      nmCount();
+    } catch {
+      $("#nmBody").innerHTML = `<p>Couldn't reach Hugging Face. Check your internet connection and try again.</p>`;
+    }
+  }
+  function nmCount() {
+    const n = qa("#nmBody input[type=checkbox]:checked").length;
+    $("#nmCount").textContent = found.length ? `${n} of ${found.length} ticked` : "";
+    $("#nmAdd").disabled = !n;
+    $("#nmAdd").textContent = n ? `Add ${n} to Starter picks` : "Add to Starter picks";
+  }
+  $("#findNew").addEventListener("click", findNewModels);
+  $("#nmClose").addEventListener("click", () => $("#newModels").close());
+  $("#nmCancel").addEventListener("click", () => $("#newModels").close());
+  $("#nmBody").addEventListener("change", nmCount);
+  $("#nmAll").addEventListener("change", (e) => { qa("#nmBody input[type=checkbox]").forEach((c) => { c.checked = e.target.checked; }); nmCount(); });
+  $("#nmAdd").addEventListener("click", async () => {
+    const pick = qa("#nmBody input[type=checkbox]:checked").map((c) => found[+c.dataset.i]);
+    const btn = $("#nmAdd"); btn.disabled = true; btn.textContent = "Adding…";
+    // Look up each one's real recommended file size, so "fits your computer" is accurate.
+    const added = await Promise.all(pick.map(async (m) => {
+      let sizeGB = m.sizeGB;
+      try { const files = await listGGUF(m.id); const rec = files.length && pickRecommended(files); if (rec) sizeGB = rec.size / 1e9; } catch {}
+      const maker = makerOf(m) || m.maker;
+      return { id: m.id, name: m.name, maker, params: m.params, sizeGB, tags: m.tags, context: null, userAdded: Date.now(), released: m.created ? new Date(m.created).toISOString().slice(0, 10) : null,
+        blurb: `Added by you from Hugging Face. ${fmtNum(m.downloads)} downloads${m.created ? `, first uploaded ${fmtWhen(m.created)}` : ""}.` };
+    }));
+    const s = await D.settings.get();
+    await D.settings.set({ addedModels: [...(s.addedModels || []).filter((x) => !added.some((a) => a.id === x.id)), ...added] });
+    addUserModels(added);
+    $("#newModels").close();
+    state.tab = "starter"; renderControls(); renderGrid();
+    toast(`Added ${added.length} ${added.length === 1 ? "model" : "models"} to Starter picks.`, 3500);
+  });
+  async function removeUserModel(id) {
+    const s = await D.settings.get();
+    await D.settings.set({ addedModels: (s.addedModels || []).filter((x) => x.id !== id) });
+    const i = window.STARTER_MODELS.findIndex((x) => x.id === id && x.userAdded);
+    if (i >= 0) window.STARTER_MODELS.splice(i, 1);
+    renderGrid();
   }
 
   // ---------- Detail: choose a file and download it into the app ----------
@@ -371,6 +497,7 @@
         <div class="dactions">
           <button class="btn primary" id="dlBest" disabled>Download best version</button>
           <a class="btn" href="${HF}/${esc(m.id)}">Model page ↗</a>
+          ${m.userAdded ? `<button class="btn sm" id="dRemove" type="button" title="Take it off Starter picks. Nothing you downloaded is deleted.">Remove from Starter picks</button>` : ""}
         </div>
       </div>
       <div class="dgrid">
@@ -438,6 +565,7 @@
   $("#dClose").addEventListener("click", () => $("#detail").close());
   $("#detail").addEventListener("click", async (e) => {
     if (e.target === e.currentTarget) e.currentTarget.close();
+    if (e.target.id === "dRemove" && current) { await removeUserModel(current.id); $("#detail").close(); toast(`${current.name} removed from Starter picks.`); return; }
     const b = e.target.closest("[data-dl]"); if (!b || !current) return;
     const f = currentFiles[+b.dataset.dl];
     await D.downloads.start({ repo: current.id, name: current.name, maker: current.maker, tags: current.tags, quant: f.quant,
@@ -640,6 +768,7 @@
 
   (async () => {
     const info = await D.sys.info();
+    addUserModels((await D.settings.get()).addedModels);
     if (!store.get("ramChosen", false)) {
       state.ram = RAM_OPTIONS.reduce((best, r) => (r <= info.totalRamGB + 1 ? r : best), 8);
     }

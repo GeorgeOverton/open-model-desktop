@@ -17,6 +17,7 @@
         <button role="tab" data-view="online" aria-selected="false"><span>🌐</span> Online models</button>
         <button role="tab" data-view="chat" aria-selected="false"><span>💬</span> Chat</button>
         <button role="tab" data-view="voice" aria-selected="false"><span>🎙️</span> Voice</button>
+        <button role="tab" data-view="code" aria-selected="false"><span>🛠️</span> Claude Code</button>
         <button role="tab" data-view="settings" aria-selected="false"><span>⚙️</span> Settings</button>
       </nav>
       <div class="engine small" id="engineStatus">No model loaded</div>
@@ -69,6 +70,7 @@
         <nav class="tabs" role="tablist">
           <button role="tab" id="tabStarter" aria-selected="true" class="tab">⭐ Starter picks</button>
           <button role="tab" id="tabSearch" aria-selected="false" class="tab">🔍 Search results</button>
+          <button class="btn sm" id="findNew" type="button" title="Look on Hugging Face for popular new models and add the ones you want to Starter picks">✨ Find new models</button>
           <label class="sortby small">Sort by <select id="sortBy" aria-label="Sort models by"></select></label>
           <label class="toggle"><input type="checkbox" id="hideTooBig"> Hide models too big for my computer</label>
         </nav>
@@ -102,7 +104,15 @@
 
       <!-- CHAT -->
       <section class="view chatview" id="view-chat" hidden>
+        <aside class="chatlist" id="chatList" aria-label="Saved chats">
+          <button class="btn primary newchat" id="newChat2" type="button">＋ New chat</button>
+          <input id="chatSearch" type="search" placeholder="Search your chats" aria-label="Search your chats" autocomplete="off">
+          <nav id="chatItems"></nav>
+          <p class="small muted clnote">Chats are saved only on this computer.</p>
+        </aside>
+        <div class="chatmain">
         <div class="chatbar">
+          <button class="btn sm chatsToggle" id="chatsToggle" type="button" aria-controls="chatList" title="Show your saved chats">☰ Chats</button>
           <label class="small" for="chatModel">Model</label>
           <select id="chatModel"></select>
           <button class="btn sm" id="newChat">New chat</button>
@@ -113,6 +123,26 @@
           <button class="btn primary" id="sendBtn" type="submit">Send</button>
           <button class="btn" id="stopBtn" type="button" hidden>Stop</button>
         </form>
+        </div>
+      </section>
+
+      <!-- CLAUDE CODE -->
+      <section class="view chatview codeview" id="view-code" hidden>
+        <div class="chatmain">
+        <div class="chatbar codebar">
+          <button class="btn sm" id="codeFolder" type="button">📁 Choose a folder…</button>
+          <span id="codePath" class="small muted codepath"></span>
+          <label class="small" for="codeMode">Mode</label>
+          <select id="codeMode"></select>
+          <button class="btn sm" id="codeNew" type="button">New task</button>
+        </div>
+        <div class="messages" id="codeLog" aria-live="polite"></div>
+        <form class="composer" id="codeForm">
+          <textarea id="codePrompt" rows="1" placeholder="Ask Claude to do something with the files in this folder…" aria-label="Ask Claude Code"></textarea>
+          <button class="btn primary" id="codeSend" type="submit">Send</button>
+          <button class="btn" id="codeStop" type="button" hidden>Stop</button>
+        </form>
+        </div>
       </section>
 
       <!-- VOICE -->
@@ -194,6 +224,17 @@
         </section>
 
         <section class="sblock">
+          <h2>Saved chats</h2>
+          <div class="way">
+            <label class="toggle inline"><input type="checkbox" id="saveChats"> Save my chats on this computer</label>
+            <label class="toggle inline"><input type="checkbox" id="makeFiles"> Let models make files you can open and save (code, documents, lists, web pages)</label>
+            <p class="small muted">Every conversation in Chat is kept in a folder on this computer, so you can open it again from the list on the left of Chat. Nothing is uploaded. Voice mode conversations aren't saved.</p>
+            <p class="small"><button class="linkish" id="openChatsFolder">Open the folder where chats are saved</button>
+              · <span id="delAllWrap"><button class="linkish danger" id="delAllChats">Delete all saved chats</button></span></p>
+          </div>
+        </section>
+
+        <section class="sblock">
           <h2>Downloads</h2>
           <div class="way">
             <label class="small" for="hfToken"><strong>Hugging Face token</strong> <span class="muted">(optional, only for models that need a login)</span></label>
@@ -222,6 +263,16 @@
     <div id="dBody"></div>
   </dialog>
 
+  <dialog id="newModels" aria-labelledby="nmTitle">
+    <div class="dhead">
+      <div><h2 id="nmTitle">Find new models</h2><p class="muted small" id="nmSub">Popular and trending models on Hugging Face that aren't in your Starter picks yet. Tick the ones you want.</p></div>
+      <button class="icon" id="nmClose" aria-label="Close">✕</button>
+    </div>
+    <div id="nmBody"></div>
+    <div class="nmfoot"><label class="toggle inline small"><input type="checkbox" id="nmAll"> Tick all</label><span class="muted small" id="nmCount"></span>
+      <button class="btn" id="nmCancel" type="button">Cancel</button><button class="btn primary" id="nmAdd" type="button" disabled>Add to Starter picks</button></div>
+  </dialog>
+
   <div id="toast" class="toast" role="status"></div>
 
   <script src="models.js"></script>
@@ -232,5 +283,6 @@
   <script src="chat.js"></script>
   <script src="settings.js"></script>
   <script src="voice.js"></script>
+  <script src="code.js"></script>
 </body>
 </html>

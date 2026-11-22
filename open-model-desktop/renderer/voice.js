@@ -221,6 +221,7 @@
       src.connect(proc); proc.connect(ctx.destination);
       audio = { ctx, stream, src, proc };
       setMode("wake");
+      warm(settings.wakePhrases.find((p) => p.model));   // get the first wake phrase's model ready
       return true;
     } catch (err) {
       toast(/Permission|NotAllowed/i.test(err.name + err.message) ? "The app needs microphone permission. Allow it in your system settings, then try again."
@@ -250,7 +251,7 @@
     $("#heard").textContent = "Hearing: " + text;
     if (mode === "wake" && !active) {
       const m = matchWake(text, settings.wakePhrases.filter((p) => p.model));
-      if (m) { active = m.entry; chime(true); setMode("command"); }
+      if (m) { active = m.entry; chime(true); setMode("command"); warm(m.entry); }
     }
   }
   function onResult(text) {
@@ -263,7 +264,7 @@
       const m = matchWake(text, entries);
       if (m) {
         if (!active) chime(true);
-        active = m.entry;
+        active = m.entry; warm(m.entry);
         if (m.rest.split(" ").filter(Boolean).length >= 2) return handleCommand(active, m.rest);
         setMode("command");
         clearTimeout(commandTimer);
@@ -275,6 +276,11 @@
     }
   }
 
+  // Start loading the model the moment its wake phrase is heard, while you're still asking, so the answer comes sooner.
+  function warm(entry) {
+    if (!entry?.model || entry.model.startsWith("@") || window.OMDChat.busy) return;
+    D.chat.load(entry.model).catch(() => {});
+  }
   async function handleCommand(entry, text) {
     clearTimeout(commandTimer); clearTimeout(followTimer);
     setMode("thinking");
@@ -286,11 +292,19 @@
     if (Date.now() - lastTurnAt > 120000) await D.chat.reset(null).catch(() => {});
     const system = [entry.personality || `You are ${entry.phrase.replace(/^(hey|ok|hi)\s+/i, "")}, a helpful voice assistant.`,
       "You are talking out loud, so answer in a few short spoken sentences. No lists, tables, code blocks or markdown unless asked."].join(" ");
-    let full = "", pending = "";
+    let full = "", pending = "", first = true;
+    const words = (s) => s.trim().split(/\s+/).filter(Boolean).length;
     const flush = (force) => {
-      // Speak sentence by sentence so replies start quickly.
+      // Start talking as soon as possible: the first bit is spoken at the first comma (or after about 10 words),
+      // then the rest goes sentence by sentence while the model keeps writing.
+      if (first) {
+        let cut = null;
+        for (const b of pending.matchAll(/[,;:.!?]\s/g)) { const head = pending.slice(0, b.index + 2); if (words(head) >= 3) { cut = head; break; } }
+        if (!cut && words(pending) >= 11 && /\s$/.test(pending)) cut = pending;
+        if (cut) { first = false; speak(cut, voice.id); pending = pending.slice(cut.length); return flush(force); }
+      }
       const m = pending.match(/^[\s\S]*?[.!?](\s|$)/);
-      if (m) { speak(m[0], voice.id); pending = pending.slice(m[0].length); return flush(force); }
+      if (m && (m[1] || force)) { first = false; speak(m[0], voice.id); pending = pending.slice(m[0].length); return flush(force); }
       if (force && pending.trim()) { speak(pending, voice.id); pending = ""; }
     };
     generating = true;
@@ -298,7 +312,7 @@
       if (window.OMD.chatChoices.find((m) => m.file === entry.model) == null) throw new Error(`The model for "${entry.phrase}" isn't downloaded any more. Pick another one below.`);
       $("#orbHint").textContent = `Using ${name}`;
       await window.OMDChat.ask({
-        file: entry.model, text, systemPrompt: system,
+        file: entry.model, text, systemPrompt: system, fast: true,
         onRoute: (r) => { $("#orbHint").textContent = `Optimal picked ${r.name} for ${r.taskLabel}`; },
         onText: (t) => { full += t; pending += t; out.textContent = full; if (mode === "thinking" || mode === "speaking") flush(false); },
       });

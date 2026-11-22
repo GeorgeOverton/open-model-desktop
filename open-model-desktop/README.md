@@ -161,3 +161,47 @@ It also checks quietly a few seconds after it starts.
 
 You can also start a build from the Actions tab → Release → Run workflow. The installer isn't code-signed, so
 Windows may show "Windows protected your PC" when you install it by hand (More info, then Run anyway).
+
+## Saved chats
+Every conversation in Chat is saved automatically, only on this computer (one file per chat in the app's `chats` folder,
+next to `models`). The list on the left of Chat shows them by date. Click one to open it and carry on where you left off,
+✎ to rename, 🗑 to delete, or type in the search box to find a chat by its words. A reopened chat remembers what was said:
+local models are given the earlier messages, and Claude picks up its own conversation again. You can also change the model
+in the middle of a chat and the new model gets the earlier messages. Turn saving off, open the folder, or delete every saved
+chat in Settings → Saved chats. Voice mode conversations aren't saved.
+
+## Find new models
+Find models → **✨ Find new models** looks on Hugging Face for popular and trending models that aren't in Starter picks yet.
+Tick the ones you want and press Add: they join Starter picks (marked "Added"), with their real download size. Open one and press
+"Remove from Starter picks" to take it off again. Nothing is downloaded until you press Download, as usual.
+
+## Voice mode speed
+Voice mode now starts talking at the first comma of an answer instead of waiting for a whole sentence, starts loading the model
+the moment it hears the wake phrase (while you're still asking), and skips the "thinking" step of thinking models.
+
+## Files in Chat
+Ask any model to make a file ("make me a shopping list", "write a Python script that…", "make a web page for…") and it appears as a
+file card under the answer, with **Open**, **Save as…** and **Copy**. Files are kept in the app's `files` folder, next to the chat they
+came from, and deleted with that chat. Any other code block also gets Copy and Save as file. Turn it off in Settings → Saved chats.
+
+## Claude Code
+The **🛠️ Claude Code** page works like the Claude Code extension for VS Code: choose a folder, ask for a change, and Claude reads the
+files and works on them. Before each file change or command it shows you exactly what it wants to do (changes as a red and green diff)
+with **Allow**, **Always allow** and **Don't allow** (you can also type what to do instead). Modes: *Ask before changes* (default),
+*Allow file edits* and *Plan only*. It uses the official Claude Code on your Claude Pro plan (set up in Settings → Claude on your Pro plan),
+never an API key, and carries on your last task in each folder until you press New task.
+How it works: the app runs `claude -p` in that folder with `--permission-prompt-tool`, pointing at the `approve` tool of `mcp-server.mjs`,
+which asks the app over its private local connection.
+
+## Ideas borrowed from LM Studio's catalog
+- **Tool use** filter and badge, for models that can call tools and functions (Qwen 2.5/3, Llama 3.x, Mistral, gpt-oss and others).
+- **One card per model family** with a chip for each size (for example Qwen3 4B, 8B, 30B). The size picked for you is the biggest that
+  runs great on your computer, else the biggest that fits; sizes that are too big are crossed out. Click another chip to switch.
+- **"Released 3 months ago" / "Added by you today"** on each card, and a **Recently added** sort for Starter picks
+  (models you added with Find new models come first, then the newest releases).
+
+## Licence
+Open Model Desktop is free to use, copy, change and share for noncommercial purposes. **Nobody may sell copies or charge
+for it without written permission from George.** The terms are the PolyForm Noncommercial License 1.0.0 with that note on top;
+see [LICENSE](LICENSE). The installer shows the licence before it installs. Third-party parts (Electron, node-llama-cpp,
+kokoro-js, vosk-browser, model and voice files, company logos) keep their own licences.

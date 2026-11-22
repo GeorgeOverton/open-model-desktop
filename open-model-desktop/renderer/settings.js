@@ -66,6 +66,20 @@
   $("#voiceSpeed").addEventListener("change", (e) => save({ voiceSpeed: +e.target.value }));
   $("#speakReplies").addEventListener("change", (e) => save({ speakReplies: e.target.checked }));
   $("#speakChat").addEventListener("change", (e) => save({ speakChat: e.target.checked }));
+  $("#saveChats").addEventListener("change", async (e) => { await save({ saveChats: e.target.checked }); toast(e.target.checked ? "Chats will be saved on this computer." : "New chats won't be saved. Chats you already saved are kept until you delete them.", 4500); });
+  $("#openChatsFolder").addEventListener("click", () => D.chats.openFolder());
+  $("#makeFiles").addEventListener("change", (e) => save({ makeFiles: e.target.checked }));
+  $("#delAllWrap").addEventListener("click", async (e) => {
+    const act = e.target.closest("button")?.id;
+    const wrap = $("#delAllWrap");
+    if (act === "delAllChats") wrap.innerHTML = `Delete every saved chat? <button class="btn sm danger" id="delAllYes">Delete all</button> <button class="btn sm" id="delAllNo">Keep them</button>`;
+    else if (act === "delAllNo") wrap.innerHTML = `<button class="linkish danger" id="delAllChats">Delete all saved chats</button>`;
+    else if (act === "delAllYes") {
+      await D.chats.removeAll();
+      wrap.innerHTML = `<button class="linkish danger" id="delAllChats">Delete all saved chats</button>`;
+      bus.dispatchEvent(new CustomEvent("chatsChanged")); toast("All saved chats deleted.");
+    }
+  });
   $("#voiceName").addEventListener("change", (e) => save({ voiceName: e.target.value }));
   $("#followUp").addEventListener("change", (e) => save({ followUpSeconds: +e.target.value }));
   $("#saveToken").addEventListener("click", async () => { await save({ hfToken: $("#hfToken").value.trim() }); toast("Saved."); });
@@ -239,6 +253,8 @@
     $("#voiceSpeed").value = settings.voiceSpeed || 1; $("#voiceSpeedVal").textContent = (+(settings.voiceSpeed || 1)).toFixed(2) + "×";
     $("#speakReplies").checked = settings.speakReplies !== false;
     $("#speakChat").checked = !!settings.speakChat;
+    $("#saveChats").checked = settings.saveChats !== false;
+    $("#makeFiles").checked = settings.makeFiles !== false;
     $("#followUp").value = String(settings.followUpSeconds ?? 8);
     $("#hfToken").value = settings.hfToken || "";
     fillSystemVoices(); renderTts(); renderVoices();

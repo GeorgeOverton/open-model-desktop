@@ -8,6 +8,7 @@ const status = (data) => post({ event: "status", data });
 
 let llama = null, model = null, context = null, seq = null, chat = null;
 let file = null, systemPrompt = null, abort = null;
+let chatConv = null;   // which saved chat the current session holds, so a reopened chat (or a new model) gets its history back
 
 async function unload() {
   abort?.abort();
@@ -23,6 +24,7 @@ async function newChat(sp) {
   seq ??= context.getSequence();
   await seq.clearHistory();
   systemPrompt = sp ?? null;
+  chatConv = null;
   chat = new LlamaChatSession({ contextSequence: seq, ...(systemPrompt ? { systemPrompt } : {}) });
 }
 
@@ -48,14 +50,23 @@ async function load({ file: f, path }) {
   return { file, gpu: llama.gpu || false };
 }
 
-async function send({ text, file: f, path, systemPrompt: sp, turnId }) {
+async function send({ text, file: f, path, systemPrompt: sp, turnId, convId = null, history = null, fast = false }) {
   if (f && f !== file) await load({ file: f, path });
   if (!chat) throw new Error("Pick a model first.");
   if ((sp ?? null) !== systemPrompt) await newChat(sp);
+  if (!convId) { if (chatConv) await newChat(sp); }
+  else if (chatConv !== convId) {
+    // A different conversation (or a fresh model): start clean, then put the earlier messages back.
+    await newChat(sp);
+    if (history?.length) chat.setChatHistory([...chat.getChatHistory().filter((h) => h.type === "system"),
+      ...history.map((m) => (m.role === "user" ? { type: "user", text: m.text } : { type: "model", response: [m.text] }))]);
+    chatConv = convId;
+  }
   abort = new AbortController();
   try {
     const answer = await chat.prompt(text, {
       signal: abort.signal, stopOnAbortSignal: true, maxTokens: 4096,
+      ...(fast ? { budgets: { thoughtTokens: 0 } } : {}),   // Voice mode: skip "thinking" so it starts talking straight away
       onResponseChunk: (c) => post({ event: "chunk", data: { turnId, kind: c.type === "segment" && c.segmentType === "thought" ? "thought" : "text", text: c.text } }),
     });
     return { text: answer };

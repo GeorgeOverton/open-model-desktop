@@ -16,7 +16,7 @@ export const CLAUDE_MODELS = [
   { id: "haiku", name: "Haiku", blurb: "The quickest, and the lightest on your plan. Good for voice mode." },
 ];
 export const DEFAULT_CLAUDE_MODEL = "";
-const CHAT_PROMPT = "You are Claude, chatting with the user inside a desktop app called Open Model Desktop. Answer conversationally and helpfully. Keep answers reasonably short unless asked for detail. You have no tools in this chat.";
+export const CHAT_PROMPT = "You are Claude, chatting with the user inside a desktop app called Open Model Desktop. Answer conversationally and helpfully. Keep answers reasonably short unless asked for detail. You have no tools in this chat.";
 
 // ---------- Finding Claude Code ----------
 const home = os.homedir();
@@ -82,10 +82,10 @@ function friendly(text) {
 }
 
 export function createClaude({ getModel, onChunk, workDir }) {
-  let sessionId = null, systemPrompt = null, child = null, stopped = false;
+  let sessionId = null, systemPrompt = null, child = null, stopped = false, conv = null;
 
   return {
-    reset(sp = null) { sessionId = null; systemPrompt = sp; },
+    reset(sp = null) { sessionId = null; systemPrompt = sp; conv = null; },
     stop() { stopped = true; try { child?.kill(); } catch {} },
 
     // Is Claude Code installed, and signed in with a Claude plan (not an API key)?
@@ -115,8 +115,14 @@ export function createClaude({ getModel, onChunk, workDir }) {
       return this.status();
     },
 
-    async send({ text, systemPrompt: sp = null, turnId }) {
+    async send({ text, systemPrompt: sp = null, turnId, convId = null, history = null, resume = null }, retried = false) {
       if ((sp ?? null) !== systemPrompt) this.reset(sp);
+      // Switching to another saved chat: pick up its Claude conversation again.
+      if (convId !== conv) { sessionId = (convId && resume) || null; conv = convId; }
+      // No Claude conversation to resume (it started on another model, or Claude has forgotten it): send the earlier messages along.
+      const prompt = !sessionId && history?.length
+        ? "Earlier in this conversation:\n\n" + history.map((m) => (m.role === "user" ? "Me: " : "You: ") + m.text).join("\n\n").slice(-16000) + "\n\nNow, my next message:\n" + text
+        : text;
       const bin = findClaude();
       if (!bin) throw Object.assign(new Error("Claude Code isn't installed on this computer. Open Settings → Claude for the one-line install."), { install: true });
       fs.mkdirSync(workDir, { recursive: true });
@@ -127,7 +133,7 @@ export function createClaude({ getModel, onChunk, workDir }) {
       stopped = false;
       const proc = spawn(bin.command, args, { cwd: workDir, env: childEnv(bin.env), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       child = proc;
-      proc.stdin.end(text);
+      proc.stdin.end(prompt);
 
       let buf = "", errText = "", streamed = "", result = null, newSession = null, modelUsed = "";
       const handle = (m) => {
@@ -155,14 +161,89 @@ export function createClaude({ getModel, onChunk, workDir }) {
       proc.stderr.on("data", (c) => { errText += c; });
       const code = await new Promise((resolve) => { proc.on("error", (e) => { errText += e.message; resolve(-1); }); proc.on("close", resolve); });
       if (child === proc) child = null;
-      if (stopped) { if (newSession) sessionId = newSession; return { text: streamed, stopped: true, model: "Claude" }; }
+      if (stopped) { if (newSession) sessionId = newSession; return { text: streamed, stopped: true, model: "Claude", session: sessionId }; }
 
       const answer = result?.result ?? streamed;
+      if ((!result || result.is_error || code !== 0) && sessionId && !retried && /no conversation found|session.*not found/i.test(errText + (result?.result || ""))) {
+        sessionId = null; return this.send({ text, systemPrompt: sp, turnId, convId, history, resume: null }, true);
+      }
       if (!result || result.is_error || code !== 0) throw friendly([result?.result, errText, result?.subtype].filter(Boolean).join("\n") || `Claude Code stopped (code ${code}).`);
       if (LIMIT_RE.test(answer) && answer.length < 300 && !streamed.trim()) throw friendly(answer);
       if (newSession) sessionId = newSession;
       const nice = /opus/i.test(modelUsed) ? "Claude Opus" : /haiku/i.test(modelUsed) ? "Claude Haiku" : /sonnet/i.test(modelUsed) ? "Claude Sonnet" : "Claude";
-      return { text: answer, model: nice, plan: true };
+      return { text: answer, model: nice, plan: true, session: sessionId };
+    },
+  };
+}
+
+// ---------- Claude Code mode: Claude works on the files in a folder you pick, like the VS Code extension ----------
+// It runs Claude Code with its normal tools in that folder. Before it changes a file or runs a command, Claude Code
+// asks this app (through the "approve" tool of mcp-server.mjs), and the app shows you Allow / Deny.
+export const CODE_MODES = [
+  { id: "default", name: "Ask before changes", blurb: "Claude can read your files, but asks you before it edits anything or runs a command." },
+  { id: "acceptEdits", name: "Allow file edits", blurb: "Claude edits files without asking, and still asks before running commands." },
+  { id: "plan", name: "Plan only", blurb: "Claude looks around and writes a plan, but doesn't change anything." },
+];
+export function createCoder({ onEvent, getModel, mcpConfig }) {
+  const runs = new Map();   // runId -> child process
+  return {
+    stop(runId) { const p = runs.get(runId); if (p) { p.stopped = true; try { p.kill(); } catch {} } },
+    async send({ runId, folder, text, mode = "default", resume = null }) {
+      const bin = findClaude();
+      if (!bin) throw Object.assign(new Error("Claude Code isn't installed on this computer. Open Settings → Claude on your Pro plan for the one-line install."), { install: true });
+      if (!fs.existsSync(folder)) throw new Error("That folder isn't there any more. Choose it again.");
+      const model = await getModel();
+      const args = [...bin.pre, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        "--permission-mode", CODE_MODES.some((m) => m.id === mode) ? mode : "default",
+        "--mcp-config", JSON.stringify(mcpConfig(runId)), "--permission-prompt-tool", "mcp__omd__approve",
+        ...(model ? ["--model", model] : []), ...(resume ? ["--resume", resume] : [])];
+      const proc = spawn(bin.command, args, { cwd: folder, env: childEnv({ ...bin.env, MCP_TOOL_TIMEOUT: "86400000" }), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      runs.set(runId, proc);
+      proc.stdin.end(text);
+      let buf = "", errText = "", result = null, session = resume, streamed = false;
+      const handle = (m) => {
+        if (m.session_id) session = m.session_id;
+        if (m.type === "stream_event") {
+          const e = m.event;
+          if (e?.type === "message_start") streamed = false;
+          if (e?.type === "content_block_delta" && (e.delta?.type === "text_delta" || e.delta?.type === "thinking_delta")) { streamed = true; onEvent(runId, { kind: e.delta.type === "text_delta" ? "text" : "thought", text: e.delta.text ?? e.delta.thinking }); }
+          return;
+        }
+        if (m.type === "system" && m.subtype === "init") return onEvent(runId, { kind: "init", model: m.model || "", session, tools: m.tools || [] });
+        if (m.type === "assistant") {
+          for (const b of m.message?.content || []) {
+            if (b.type === "tool_use") onEvent(runId, { kind: "tool", id: b.id, name: b.name, input: b.input || {} });
+            else if (b.type === "text" && !streamed && b.text && !LIMIT_RE.test(b.text)) onEvent(runId, { kind: "text", text: b.text, whole: true });
+          }
+          onEvent(runId, { kind: "break" });
+          return;
+        }
+        if (m.type === "user") {
+          for (const b of (Array.isArray(m.message?.content) ? m.message.content : [])) {
+            if (b.type !== "tool_result") continue;
+            const out = Array.isArray(b.content) ? b.content.map((c) => c.text || "").join("\n") : String(b.content ?? "");
+            onEvent(runId, { kind: "result", id: b.tool_use_id, error: !!b.is_error, text: out.slice(0, 20000) });
+          }
+          return;
+        }
+        if (m.type === "result") result = m;
+      };
+      proc.stdout.setEncoding("utf8");
+      proc.stdout.on("data", (c) => {
+        buf += c; let i;
+        while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue; try { handle(JSON.parse(line)); } catch {} }
+      });
+      proc.stderr.setEncoding("utf8");
+      proc.stderr.on("data", (c) => { errText += c; });
+      const code = await new Promise((resolve) => { proc.on("error", (e) => { errText += e.message; resolve(-1); }); proc.on("close", resolve); });
+      runs.delete(runId);
+      if (proc.stopped) return { stopped: true, session };
+      if (!result || result.is_error || code !== 0) {
+        const t = [result?.result, errText, result?.subtype].filter(Boolean).join("\n");
+        if (resume && /no conversation found|session.*not found/i.test(t)) return this.send({ runId, folder, text, mode, resume: null });
+        throw friendly(t || `Claude Code stopped (code ${code}).`);
+      }
+      return { session, text: result.result || "", turns: result.num_turns || 0, seconds: Math.round((result.duration_ms || 0) / 1000) };
     },
   };
 }

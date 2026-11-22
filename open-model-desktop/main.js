@@ -1,6 +1,6 @@
 // Open Model Desktop: main process.
 // Owns the window, file downloads, the local model runtime (node-llama-cpp) and settings.
-import { app, BrowserWindow, ipcMain, protocol, shell, session, net, utilityProcess, systemPreferences, Tray, Menu, Notification, nativeImage, clipboard } from "electron";
+import { app, BrowserWindow, ipcMain, protocol, shell, session, net, utilityProcess, systemPreferences, Tray, Menu, Notification, nativeImage, clipboard, dialog } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createClaude, CLAUDE_FILE, CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL } from "./claude.mjs";
+import { createClaude, createCoder, CODE_MODES, CLAUDE_FILE, CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL, CHAT_PROMPT } from "./claude.mjs";
 import { TASKS, TIERS, guessTask, parseTask, ROUTER_PROMPT, pickRouter, pickModel as pickBest } from "./router.mjs";
 import electronUpdater from "electron-updater";
 
@@ -29,6 +29,8 @@ const modelsDir = () => path.join(dataDir(), "models");
 const voiceDir = () => path.join(dataDir(), "voice");
 const settingsFile = () => path.join(dataDir(), "settings.json");
 const manifestFile = () => path.join(modelsDir(), "models.json");
+const chatsDir = () => path.join(dataDir(), "chats");
+const filesDir = () => path.join(dataDir(), "files");
 
 async function readJSON(file, fallback) {
   try { return JSON.parse(await fsp.readFile(file, "utf8")); } catch { return fallback; }
@@ -50,6 +52,8 @@ const DEFAULT_SETTINGS = {
   voiceName: "",          // built-in system voice, used if natural voices aren't downloaded
   followUpSeconds: 8,
   claudeModel: DEFAULT_CLAUDE_MODEL,
+  saveChats: true,
+  makeFiles: true,         // models can make files in Chat (Settings → Saved chats)         // keep every Chat conversation in userData/chats (Settings → Saved chats)
   updateRepo: "",          // GitHub repository with releases, as "owner/name" (see Settings → Updates)
   wakePhrases: [
     { id: "jarvis", phrase: "Hey Jarvis", aliases: [], model: "", personality: "" },
@@ -200,6 +204,58 @@ ipcMain.handle("sys:info", () => ({
   arch: process.arch,
   dataDir: dataDir(),
 }));
+// ---------- Saved chats: one JSON file per conversation, only on this computer ----------
+const chatFile = (id) => { if (!/^[a-z0-9]{6,40}$/.test(String(id))) throw new Error("Bad chat id"); return path.join(chatsDir(), id + ".json"); };
+const chatSummary = (c) => ({ id: c.id, title: c.title, model: c.model, modelName: c.modelName, created: c.created, updated: c.updated, count: (c.messages || []).length,
+  preview: String([...(c.messages || [])].reverse().find((m) => m.role === "bot" && m.text)?.text || "").slice(0, 140),
+  body: (c.messages || []).map((m) => m.text || "").join(" ").slice(0, 4000) });   // for searching
+let chatQueue = Promise.resolve();   // one write at a time, so two saves of the same chat can't trip over each other
+const queued = (fn) => (...args) => { const run = chatQueue.then(() => fn(...args)); chatQueue = run.catch(() => {}); return run; };
+ipcMain.handle("chats:list", async () => {
+  let names = [];
+  try { names = (await fsp.readdir(chatsDir())).filter((n) => n.endsWith(".json")); } catch { return []; }
+  const out = [];
+  for (const n of names) { const c = await readJSON(path.join(chatsDir(), n), null); if (c?.id) out.push(chatSummary(c)); }
+  return out.sort((a, b) => b.updated - a.updated);
+});
+ipcMain.handle("chats:get", (_e, id) => readJSON(chatFile(id), null));
+ipcMain.handle("chats:save", queued(async (_e, chat) => {
+  if (!(await getSettings()).saveChats) return null;
+  const file = chatFile(chat.id);
+  const old = await readJSON(file, {});
+  const c = { ...old, ...chat, title: String(chat.title ?? old.title ?? "New chat").slice(0, 120), updated: Date.now(), created: old.created || chat.created || Date.now() };
+  await writeJSON(file, c);
+  return chatSummary(c);
+}));
+ipcMain.handle("chats:rename", queued(async (_e, id, title) => {
+  const c = await readJSON(chatFile(id), null); if (!c) return null;
+  c.title = String(title).trim().slice(0, 120) || c.title;
+  await writeJSON(chatFile(id), c);
+  return chatSummary(c);
+}));
+ipcMain.handle("chats:delete", queued(async (_e, id) => { await fsp.rm(chatFile(id), { force: true }); await fsp.rm(path.join(filesDir(), path.basename(chatFile(id), ".json")), { recursive: true, force: true }); }));
+ipcMain.handle("chats:deleteAll", queued(async () => { await fsp.rm(chatsDir(), { recursive: true, force: true }); await fsp.rm(filesDir(), { recursive: true, force: true }); }));
+
+// ---------- Files that models make in Chat: kept in userData/files/<chat id>/ ----------
+const safeFileName = (n) => (String(n).split(/[\\/]/).pop().replace(/[<>:"|?*\x00-\x1f]/g, "_").replace(/^\.+/, "").slice(0, 120)) || "file.txt";
+const insideFiles = (p) => { const r = path.resolve(p); if (!r.startsWith(path.resolve(filesDir()) + path.sep)) throw new Error("Not one of the app's files"); return r; };
+ipcMain.handle("files:write", async (_e, { chatId, name, content }) => {
+  const dir = path.join(filesDir(), /^[a-z0-9]{6,40}$/.test(String(chatId)) ? chatId : "unsaved");
+  await fsp.mkdir(dir, { recursive: true });
+  const file = path.join(dir, safeFileName(name));
+  await fsp.writeFile(file, String(content));
+  return file;
+});
+ipcMain.handle("files:open", async (_e, p) => { const err = await shell.openPath(insideFiles(p)); if (err) throw new Error(err); });
+ipcMain.handle("files:reveal", (_e, p) => shell.showItemInFolder(insideFiles(p)));
+ipcMain.handle("files:saveAs", async (_e, { name, content }) => {
+  const r = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath("documents"), safeFileName(name)) });
+  if (r.canceled || !r.filePath) return null;
+  await fsp.writeFile(r.filePath, String(content));
+  return r.filePath;
+});
+ipcMain.handle("chats:openFolder", async () => { await fsp.mkdir(chatsDir(), { recursive: true }); shell.openPath(chatsDir()); });
+
 ipcMain.handle("sys:openModelsFolder", async () => { await fsp.mkdir(modelsDir(), { recursive: true }); shell.openPath(modelsDir()); });
 // macOS asks once for microphone access; elsewhere this is always allowed.
 ipcMain.handle("sys:askMic", async () => (process.platform === "darwin" ? systemPreferences.askForMediaAccess("microphone") : true));
@@ -562,11 +618,16 @@ ipcMain.handle("chat:current", () => (claudeOn ? claudeReady() : { file: engine.
 ipcMain.handle("chat:unload", () => { if (claudeOn) { claude.stop(); claudeStatus(false); return; } return engine.cancel(); });
 ipcMain.handle("chat:reset", (_e, systemPrompt) => { claude.reset(systemPrompt ?? null); return engine.proc && engine.call("reset", { systemPrompt: systemPrompt ?? null }); });
 ipcMain.handle("chat:stop", () => { claude.stop(); engine.proc?.postMessage({ op: "stop" }); });
-ipcMain.handle("chat:send", async (_e, { text, file, systemPrompt, turnId }) => {
+// Added to the instructions in Chat, so models put files they make where the app can find them.
+const FILES_PROMPT = "When the user asks you to create, write or make a file (code, a document, a list, a web page, a spreadsheet as CSV and so on), " +
+  "write a line 'File: name.ext' with a sensible file name, then put the whole file in a code block straight after it. Use one code block per file. " +
+  "For everything else, answer normally.";
+ipcMain.handle("chat:send", async (_e, { text, file, systemPrompt, turnId, convId = null, history = null, claudeSession = null, fast = false, files = false }) => {
+  if (files) systemPrompt = (systemPrompt || (file === CLAUDE_FILE ? CHAT_PROMPT : "")) + (systemPrompt || file === CLAUDE_FILE ? " " : "") + FILES_PROMPT;
   if (file === CLAUDE_FILE) {
     if (!claudeOn) await requireClaude({ fallback: true });
     await useClaude();
-    try { return await claudeSend({ text, systemPrompt: systemPrompt ?? null, turnId }); }
+    try { return await claudeSend({ text, systemPrompt: systemPrompt ?? null, turnId, convId, history, resume: claudeSession }); }
     catch (err) { if (err.login || err.install) { openWeb("claude"); throw new Error(FALLBACK_MSG); } throw err; }
   }
   let routed = null;
@@ -576,7 +637,7 @@ ipcMain.handle("chat:send", async (_e, { text, file, systemPrompt, turnId }) => 
     file = routed.file;
   }
   if (claudeOn) claudeStatus(false);
-  const r = await engine.call("send", { text, file, path: file ? modelPath(file) : null, systemPrompt: systemPrompt ?? null, turnId });
+  const r = await engine.call("send", { text, file, path: file ? modelPath(file) : null, systemPrompt: systemPrompt ?? null, turnId, convId, history, fast });
   return routed ? { ...r, routed } : r;
 });
 // ---------- Updates from GitHub releases ----------
@@ -688,6 +749,10 @@ async function startBridge() {
         send("claude:activity", { kind: "done", model: m.name });
         return out(200, { text: r.text, model: m.name });
       }
+      if (req.method === "POST" && route === "/approve") {
+        const b = await readBody(req);
+        return out(200, await codeApprove(String(b.run || ""), String(b.tool || ""), b.input || {}));
+      }
       if (req.method === "POST" && route === "/say") {
         const b = await readBody(req);
         send("claude:say", { text: String(b.text || "").slice(0, 20000), voice: String(b.voice || "") });
@@ -701,6 +766,61 @@ async function startBridge() {
   await fsp.mkdir(dataDir(), { recursive: true });
   await fsp.writeFile(bridgeFile(), JSON.stringify({ port: bridgeServer.address().port, token, pid: process.pid }), { mode: 0o600 });
 }
+
+// ---------- Claude Code mode ----------
+const codeRuns = new Map();      // runId -> { folder }
+const codeAsks = new Map();      // approval id -> { resolve, run }
+const codeAlways = new Set();    // "folder|kind" you said "always allow" to, until the app closes
+const coder = createCoder({
+  getModel: async () => (await getSettings()).claudeModel || "",
+  onEvent: (runId, ev) => send("code:event", { runId, ...ev }),
+  mcpConfig: (runId) => ({ mcpServers: { omd: { command: process.execPath, args: [mcpScript()], env: { ELECTRON_RUN_AS_NODE: "1", OMD_BRIDGE: bridgeFile(), OMD_APPROVER: runId } } } }),
+});
+const EDIT_TOOLS = /^(Edit|MultiEdit|Write|NotebookEdit)$/;
+const alwaysKey = (folder, tool, input) => folder + "|" + (EDIT_TOOLS.test(tool) ? "edits" : tool === "Bash" ? "Bash:" + String(input.command || "").trim().split(/\s+/)[0] : tool);
+function codeApprove(runId, tool, input) {
+  const run = codeRuns.get(runId);
+  if (!run) return { allow: false, message: "That task was stopped." };
+  if (codeAlways.has(alwaysKey(run.folder, tool, input))) return { allow: true };
+  const id = crypto.randomBytes(6).toString("hex");
+  return new Promise((resolve) => {
+    codeAsks.set(id, { resolve, run: runId, folder: run.folder, tool, input });
+    send("code:approve", { id, runId, tool, input, folder: run.folder });
+    if (win && !win.isFocused()) notify("Claude wants to make a change", `Claude Code is waiting for you to allow ${tool === "Bash" ? "a command" : "a file change"}.`);
+  });
+}
+ipcMain.handle("code:modes", () => CODE_MODES);
+ipcMain.handle("code:pickFolder", async () => {
+  const r = await dialog.showOpenDialog(win, { title: "Choose the folder Claude can work in", properties: ["openDirectory", "createDirectory"] });
+  return r.canceled ? null : r.filePaths[0];
+});
+ipcMain.handle("code:send", async (_e, { runId, folder, text, mode, resume }) => {
+  await requireClaude();
+  codeRuns.set(runId, { folder });
+  try {
+    const r = await coder.send({ runId, folder, text, mode, resume });
+    if (claudeLimit) { claudeLimit = ""; if (claudeOn) claudeStatus(true); }
+    return r;
+  } catch (err) {
+    if (err.limit) { claudeLimit = err.resets || "later"; if (claudeOn) claudeStatus(true); notify("Claude plan limit reached", err.message); }
+    throw err;
+  } finally {
+    codeRuns.delete(runId);
+    for (const [id, a] of codeAsks) if (a.run === runId) { codeAsks.delete(id); a.resolve({ allow: false, message: "The task ended." }); }
+  }
+});
+ipcMain.handle("code:answer", (_e, { id, decision, message }) => {
+  const a = codeAsks.get(id); if (!a) return false;
+  codeAsks.delete(id);
+  if (decision === "always") codeAlways.add(alwaysKey(a.folder, a.tool, a.input));
+  a.resolve(decision === "deny" ? { allow: false, message: message || "The user said no. Ask them what they'd like instead." } : { allow: true });
+  return true;
+});
+ipcMain.handle("code:stop", (_e, runId) => {
+  coder.stop(runId);
+  for (const [id, a] of codeAsks) if (a.run === runId) { codeAsks.delete(id); a.resolve({ allow: false, message: "Stopped by the user." }); }
+});
+ipcMain.handle("code:open", (_e, folder) => shell.openPath(folder));
 
 // Where the Claude app keeps its list of tools (connectors). The Microsoft Store version of Claude keeps it in its own folder.
 function claudeConfigFiles() {

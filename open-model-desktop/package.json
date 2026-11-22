@@ -1,7 +1,7 @@
 {
   "name": "open-model-desktop",
   "productName": "Open Model Desktop",
-  "version": "0.7.0",
+  "version": "0.10.0",
   "description": "Find, download and chat with open AI models offline, with voice wake phrases.",
   "type": "module",
   "main": "main.js",
@@ -34,6 +34,7 @@
       "renderer/**",
       "assets/**",
       "package.json",
+      "LICENSE",
       "node_modules/**"
     ],
     "asarUnpack": [
@@ -88,7 +89,8 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "artifactName": "Open-Model-Desktop-Setup-${version}.exe",
-      "uninstallDisplayName": "Open Model Desktop"
+      "uninstallDisplayName": "Open Model Desktop",
+      "license": "build/license.txt"
     },
     "linux": {
       "target": "AppImage",
@@ -104,5 +106,6 @@
       ]
     },
     "publish": null
-  }
+  },
+  "license": "SEE LICENSE IN LICENSE"
 }
