@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("desktop", {
     openExternal: (u) => ipcRenderer.invoke("sys:openExternal", u),
     askMic: () => ipcRenderer.invoke("sys:askMic"),
     copy: (t) => ipcRenderer.invoke("sys:copy", t),
+    allowCamera: (yes) => ipcRenderer.invoke("camera:allow", yes),
   },
   auto: {
     tiers: () => ipcRenderer.invoke("auto:tiers"),
@@ -19,6 +20,7 @@ contextBridge.exposeInMainWorld("desktop", {
     check: () => ipcRenderer.invoke("update:check"),
     download: () => ipcRenderer.invoke("update:download"),
     install: () => ipcRenderer.invoke("update:install"),
+    openSaved: (how) => ipcRenderer.invoke("update:openSaved", how),
     onStatus: on("update:status"),
   },
   files: {
@@ -26,6 +28,7 @@ contextBridge.exposeInMainWorld("desktop", {
     open: (p) => ipcRenderer.invoke("files:open", p),
     reveal: (p) => ipcRenderer.invoke("files:reveal", p),
     saveAs: (a) => ipcRenderer.invoke("files:saveAs", a),
+    read: (a) => ipcRenderer.invoke("attach:read", a),
     openFolder: () => ipcRenderer.invoke("files:openFolder"),
     where: () => ipcRenderer.invoke("files:where"),
   },
@@ -66,6 +69,21 @@ contextBridge.exposeInMainWorld("desktop", {
     stop: () => ipcRenderer.invoke("chat:stop"),
     send: (o) => ipcRenderer.invoke("chat:send", o),
     onChunk: on("chat:chunk"), onStatus: on("chat:status"), onRoute: on("chat:route"), onNotice: on("chat:notice"),
+  },
+  alexa: {
+    status: () => ipcRenderer.invoke("alexa:status"),
+    set: (on) => ipcRenderer.invoke("alexa:set", on),
+    model: () => ipcRenderer.invoke("alexa:model"),
+    restart: () => ipcRenderer.invoke("alexa:restart"),
+    onStatus: on("alexa:status"),
+  },
+  cast: {
+    info: () => ipcRenderer.invoke("cast:info"),
+    set: (on) => ipcRenderer.invoke("cast:set", on),
+    answer: (id, yes) => ipcRenderer.invoke("cast:answer", id, yes),
+    newCode: () => ipcRenderer.invoke("cast:newCode"),
+    remove: (id) => ipcRenderer.invoke("cast:remove", id),
+    onAsk: on("cast:ask"), onAskDone: on("cast:askDone"), onChanged: on("cast:changed"),
   },
   tts: {
     status: () => ipcRenderer.invoke("tts:status"),

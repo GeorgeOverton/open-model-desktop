@@ -10,6 +10,11 @@ Unzip **Open-Model-Desktop-Windows-Setup.zip** and double-click **Open-Model-Des
 
 Windows may show a blue "Windows protected your PC" box because the installer isn't signed with a paid certificate. Click **More info**, then **Run anyway**.
 
+## Install on Linux
+Download `Open-Model-Desktop-<version>.AppImage` from the latest release on GitHub, then make it runnable and start it:
+`chmod +x Open-Model-Desktop-*.AppImage && ./Open-Model-Desktop-*.AppImage` (or right-click → Properties → Allow executing).
+Ubuntu 22.04 and newer may need `sudo apt install libfuse2` once. The AppImage updates itself (Settings → Updates).
+
 ## Start it from the source code (Mac, Linux, or Windows without the installer)
 
 1. Install **Node.js** (the "LTS" version) from https://nodejs.org. You only do this once.
@@ -128,39 +133,23 @@ computer's memory), *Optimal 8 GB*, *16 GB* and *32 GB* (the most memory the cho
 The chat shows which model it picked. Settings → Optimal mode shows what it would pick for each kind of question.
 The logic is in `router.mjs`.
 
-## Updates (from GitHub releases)
-The app has a **Check for updates** button in Settings → Updates. It checks a GitHub repository's Releases, downloads
-the new installer when you press Download, and installs it when you press Restart to update.
-It also checks quietly a few seconds after it starts.
-
-### One-time setup
-1. On github.com, create a new **public** repository, for example `open-model-desktop`.
-   (Public, so the app can see its releases without a password.)
-2. Put this folder in it: on the repository page choose "uploading an existing file" and drag in everything here
-   except `node_modules` and `dist`, or use git:
-   ```
-   git init && git add . && git commit -m "Open Model Desktop 0.7.0"
-   git branch -M main
-   git remote add origin https://github.com/YOURNAME/open-model-desktop.git
-   git push -u origin main
-   ```
-   Make sure the `.github/workflows/release.yml` file is included (it's hidden on some computers).
-3. In the app, open Settings → Updates, type `YOURNAME/open-model-desktop` and press Save.
-   (Versions built by GitHub already know the repository, so you only do this once.)
+## Updates (Windows and Linux)
+Settings → Updates → **Check for updates** looks at the Releases of github.com/GeorgeOverton/open-model-desktop
+(change it under "Where updates come from"). It also checks quietly a few seconds after the app starts.
+- **Windows (installed with the setup wizard)** and **Linux AppImage**: Download update, then Restart to update. The app replaces
+  itself and starts again. Models, chats and settings are kept.
+- **Running from the source folder** (Start_Linux.sh, Start (Windows).bat) or a Linux copy that isn't the AppImage: the app can't
+  replace itself, so Check for updates downloads the newest AppImage (Linux) or setup file (Windows) into Downloads. On Linux press
+  Start the new version: from then on that AppImage updates itself. (Ubuntu may need `sudo apt install libfuse2` once for AppImages.)
 
 ### Publishing a new version
-1. Change `"version"` in `package.json`, for example from `0.7.0` to `0.8.0`.
-2. Commit, tag and push:
-   ```
-   git commit -am "Version 0.8.0"
-   git tag v0.8.0
-   git push && git push --tags
-   ```
-3. GitHub builds the Windows installer (Actions tab, about 10 minutes) and publishes it as a release with
-   `latest.yml`. The app then finds it with Check for updates.
-
-You can also start a build from the Actions tab → Release → Run workflow. The installer isn't code-signed, so
-Windows may show "Windows protected your PC" when you install it by hand (More info, then Run anyway).
+Releases are built by GitHub (`.github/workflows/release.yml`), never by hand, because the update button needs the
+`latest.yml` (Windows) and `latest-linux.yml` (Linux) files that the workflow adds. Releases uploaded by hand don't have them.
+1. Change `"version"` in `package.json` to a higher number (for example `0.18.0`) and push it to GitHub.
+2. On GitHub: **Actions → Release → Run workflow → Run workflow**.
+3. About 20 minutes later the release `v0.18.0` appears with `Open-Model-Desktop-Setup-0.18.0.exe`, `Open-Model-Desktop-0.18.0.AppImage`
+   and the two update files, and copies of the app offer it.
+The workflow works whether the app is at the top of the repository or in an `open-model-desktop` folder inside it.
 
 ## Saved chats
 Every conversation in Chat is saved automatically, only on this computer (one file per chat in the app's `chats` folder,
@@ -234,6 +223,47 @@ phrase's model icon. With Optimal mode, the icon changes to the model it picked.
 ## Voice mode: Clear and collapse
 🧹 Clear wipes the conversation on screen and starts a fresh one (the old one stays in Saved chats). The wake phrase list folds away with the
 arrow next to its title, and stays folded next time.
+
+## Adding files and pictures to a chat
+Press 📎 next to the message box, drag files onto the chat, or paste a picture. The first time, the app asks before it reads them (tick
+"Remember my choice" to stop it asking; change it later in Settings → Saved chats). Word, PowerPoint, Excel, OpenDocument, PDF, RTF and
+text or code files are read on this computer and their text goes to the model with your message (long files are cut to what the model can
+take, and the chip says so). Pictures go to Claude, which can see them; local models can't see pictures, so the app tells you and the model
+is told a picture was added. Scanned PDFs (pictures of pages) and old .doc/.xls/.ppt files can't be read; the app says what to do instead.
+
+## Taking a photo with the camera
+Press 📎 and choose 📷 Take a photo. The first time, the app asks before it turns the camera on (tick "Remember my choice" to stop it
+asking; change it later in Settings → Saved chats → Camera). Press 📸 Take photo, then Use this photo (or Retake), and the photo is added to your message
+like any other picture. If you have more than one camera, pick it in the list. The camera turns off as soon as the window closes. A model
+whose "File Uploading" switch is off can't be sent a photo, and the app says so.
+
+## What each model may do
+Press ⚙️ on a model's card in My models and it flips over to switches: File Uploading (read files and pictures you add),
+File Creation (make files and save them), Open Programs (run scripts it makes), Microphone Access, and Remote Access (your phone or
+Alexa). Switch any of them off (0) for that model (Done flips it back, and the card
+shows 🔒 with what's turned off). Off always wins, even if you pressed "Always" on a file. Files a model isn't allowed to open are
+shown in their folder instead.
+
+## Use your models on your phone
+Press 📱 Phone in Chat (or "Use on my phone" in Voice mode) and Turn on. Scan the QR code with the phone's camera, then press Allow on
+the PC. The phone gets a simple chat page (add it to the home screen for an app icon). The PC does the work, so it must stay on with the
+app open, and the phone must be on the same Wi-Fi. To talk instead of typing, use the 🎤 on the phone's keyboard; 🔈 reads answers out loud.
+- Only devices on your home network can connect, never the internet, and each new phone needs Allow on the PC.
+- Remove a phone, make a new code (old QR codes stop working) or turn it off in the same box.
+- Switch "Remote Access" off with ⚙️ on a model card to keep a model off phones and Alexa.
+- Phone chats are saved in Saved chats on the PC (they start with 📱).
+- Windows asks once whether the app may use your network: choose Private networks and Allow.
+
+## Amazon Alexa
+"Alexa, ask my computer what's a good name for a cat?" is answered by a model on your PC. You need your own free Alexa skill (Alexa
+developer console, same Amazon account as your Echo) and a free ngrok account with a static domain, so Amazon's servers can reach the PC.
+Settings → Amazon Alexa has the fields and step-by-step setup, plus buttons that copy the skill setup (JSON) and the endpoint address.
+- The app starts ngrok itself (install it with `winget install ngrok.ngrok`, or point the app at ngrok.exe).
+- Alexa's server on the PC only listens on the PC itself; the tunnel forwards to it. Every request must carry Amazon's signature
+  (checked against Amazon's certificate), be less than 150 seconds old, and come from your skill ID. Everything else is refused.
+- Alexa waits about 8 seconds. If the model is slower, Alexa says it's still thinking: say "what's the answer" a few seconds later.
+  "Start over" begins a new conversation. Alexa chats are saved in Saved chats (they start with 🔊).
+- Pick which model Alexa uses; models with "Remote Access" switched off (⚙️ on the card) can't be used.
 
 ## Uninstalling
 Uninstalling (Windows Settings → Apps) also deletes all downloaded models, voices, the speech pack and saved chats. Files the models made in

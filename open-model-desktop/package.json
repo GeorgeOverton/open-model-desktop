@@ -1,20 +1,22 @@
 {
   "name": "open-model-desktop",
   "productName": "Open Model Desktop",
-  "version": "0.13.0",
+  "version": "0.19.0",
   "description": "Find, download and chat with open AI models offline, with voice wake phrases.",
   "type": "module",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --publish never",
-    "release": "electron-builder --win --x64 --publish always",
+    "release": "electron-builder --win --linux --x64 --publish always",
     "test": "node test/files-test.cjs"
   },
   "dependencies": {
     "electron-updater": "6.8.12",
     "kokoro-js": "^1.2.1",
     "node-llama-cpp": "3.22.3",
+    "pdfjs-dist": "^4.10.38",
+    "qrcode": "^1.5.4",
     "vosk-browser": "0.0.8"
   },
   "devDependencies": {
@@ -26,6 +28,9 @@
     "productName": "Open Model Desktop",
     "files": [
       "main.js",
+      "attach.mjs",
+      "cast.mjs",
+      "alexa.mjs",
       "engine.mjs",
       "tts.mjs",
       "mcp-server.mjs",
@@ -54,7 +59,8 @@
       "target": "dmg",
       "category": "public.app-category.productivity",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Voice mode listens for your wake phrase. Audio never leaves this computer."
+        "NSMicrophoneUsageDescription": "Voice mode listens for your wake phrase. Audio never leaves this computer.",
+        "NSCameraUsageDescription": "Take a photo in Chat to show it to a model. Photos stay on this computer unless you send them to Claude."
       },
       "icon": "build/icon.png"
     },
@@ -95,7 +101,14 @@
       "deleteAppDataOnUninstall": true
     },
     "linux": {
-      "target": "AppImage",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "category": "Utility",
       "icon": "build/icon.png",
       "files": [
@@ -104,10 +117,25 @@
         "!node_modules/onnxruntime-node/bin/napi-v3/win32/**",
         "!node_modules/onnxruntime-node/bin/napi-v3/darwin/**",
         "!node_modules/onnxruntime-web/**",
-        "!node_modules/@img/sharp-win32*/**"
-      ]
+        "!node_modules/@img/sharp-win32*/**",
+        "!node_modules/@node-llama-cpp/linux-arm64/**",
+        "!node_modules/@node-llama-cpp/linux-armv7l/**",
+        "!node_modules/@node-llama-cpp/linux-x64-cuda-ext/**",
+        "!node_modules/onnxruntime-node/bin/napi-v3/linux/arm64/**",
+        "!node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime_providers_cuda.so",
+        "!node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime_providers_tensorrt.so",
+        "!node_modules/@img/sharp-darwin*/**",
+        "!node_modules/@img/sharp-libvips-darwin*/**"
+      ],
+      "artifactName": "Open-Model-Desktop-${version}.AppImage",
+      "synopsis": "Find, download and chat with open AI models on your own computer"
     },
-    "publish": null
+    "publish": {
+      "provider": "github",
+      "owner": "GeorgeOverton",
+      "repo": "open-model-desktop",
+      "releaseType": "draft"
+    }
   },
   "license": "SEE LICENSE IN LICENSE"
 }

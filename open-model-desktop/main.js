@@ -7,12 +7,16 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import http from "node:http";
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createClaude, CLAUDE_FILE, CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL, CHAT_PROMPT } from "./claude.mjs";
 import { TASKS, TIERS, guessTask, parseTask, ROUTER_PROMPT, pickRouter, pickModel as pickBest } from "./router.mjs";
 import electronUpdater from "electron-updater";
+import { extract as extractFile } from "./attach.mjs";
+import { createCast } from "./cast.mjs";
+import { createAlexa, interactionModel, ALEXA_PORT } from "./alexa.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // OMD_HF_MIRROR lets people (or tests) download from a Hugging Face mirror instead.
@@ -54,11 +58,24 @@ const DEFAULT_SETTINGS = {
   claudeModel: DEFAULT_CLAUDE_MODEL,
   saveChats: true,
   multiModels: true,       // keep several models running at once when there's enough memory (Settings → Running models)
-  modelNames: {},          // your own names for models: { "<file>": "Name" }
+  modelNames: {},          // your own names for models
+  modelPerms: {},          // per model: { "<file>": { upload, save, run, mic } } (false = not allowed; My models → ⚙️)
+  fileAccess: "ask",       // reading files you add to a chat: "ask" | "always" | "never"
+  castOn: false,           // "Use on your phone": a web page on the home network (cast.mjs)
+  castToken: "",           // the code in the QR; "New code" changes it
+  castDevices: [],         // phones you allowed: { id, name, key (hash), added, seen }
+  alexaOn: false,          // Amazon Alexa (alexa.mjs): your own skill, reaching this PC through an ngrok tunnel
+  alexaSkillId: "",        // amzn1.ask.skill.…: requests from any other skill are refused
+  alexaModel: "@auto",
+  alexaInvocation: "my computer",
+  alexaNgrokToken: "",     // kept in main, never sent to the window
+  alexaDomain: "",         // your free static ngrok domain, e.g. something.ngrok-free.app
+  alexaNgrokPath: "",
   makeFiles: true,         // models can make files in Chat and Voice mode (Settings → Saved chats)
   filesAutoSave: false,    // false: ask before saving each file the model makes
   filesAutoRun: false,     // false: ask before opening a file that runs code (.py, .bat, .ps1 …)
   micAllowed: false,       // the app asks before it first uses the microphone (Settings → Voice mode)
+  cameraAccess: "ask",     // taking a photo in Chat (📎 → Take a photo): "ask" | "always" | "never"
   updateRepo: "",          // GitHub repository with releases, as "owner/name" (see Settings → Updates)
   wakePhrases: [
     { id: "jarvis", phrase: "Hey Jarvis", aliases: [], model: "", personality: "" },
@@ -86,7 +103,12 @@ const safe = (s) => s.replace(/[^A-Za-z0-9._-]+/g, "_");
 
 // ---------- Window ----------
 let win;
-const send = (channel, payload) => { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); };
+// Answers for a phone (cast.mjs) go to that phone instead of the window.
+const castTaps = new Map();
+const send = (channel, payload) => {
+  if ((channel === "chat:chunk" || channel === "chat:route") && castTaps.has(payload?.turnId)) return castTaps.get(payload.turnId)(channel, payload);
+  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+};
 
 // Opening the app again (e.g. from the desktop shortcut) brings back the existing window.
 if (!app.requestSingleInstanceLock()) app.exit(0);
@@ -191,13 +213,21 @@ app.whenReady().then(() => {
     return serveFile(file);
   });
   // The microphone is only used after you say yes to the app's question (Settings → Voice mode turns it off again).
-  session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => {
-    if (permission === "media") return getSettings().then((s) => cb(!!s.micAllowed)).catch(() => cb(false));
+  session.defaultSession.setPermissionRequestHandler((wc, permission, cb, details) => {
+    // Camera: only after you said yes to the app's question this time, or chose "always".
+    if (permission === "media") return getSettings().then((s) => {
+      const types = details?.mediaTypes || [];
+      if (types.includes("video") && !(cameraOkNow || s.cameraAccess === "always")) return cb(false);
+      if (types.includes("audio") && !s.micAllowed) return cb(false);
+      cb(types.length > 0 || !!s.micAllowed);
+    }).catch(() => cb(false));
     cb(permission === "clipboard-sanitized-write");
   });
   createWindow();
   try { createTray(); } catch (err) { console.error("Tray unavailable:", err.message); }
   startBridge().catch((err) => console.error("Claude app link unavailable:", err.message));
+  getSettings().then((s) => s.castOn && cast.start()).catch((err) => console.error("Phone link unavailable:", err.message));
+  getSettings().then((s) => s.alexaOn && alexa.start()).catch((err) => console.error("Alexa link unavailable:", err.message));
   app.on("activate", showWindow);
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
@@ -205,16 +235,25 @@ app.on("before-quit", () => { quitting = true; for (const d of downloads.values(
 
 // ---------- Settings / system ----------
 // (claudeKey is from a test version that used an API key; it is no longer used or shown.)
-const forWindow = ({ claudeKey, ...s }) => s;
+const forWindow = ({ claudeKey, alexaNgrokToken, ...s }) => ({ ...s, alexaNgrokSet: !!alexaNgrokToken });
 ipcMain.handle("settings:get", async () => forWindow(await getSettings()));
-ipcMain.handle("settings:set", async (_e, { claudeKey, ...patch }) => {
+ipcMain.handle("settings:set", async (_e, { claudeKey, alexaNgrokSet, ...patch }) => {
   const next = { ...(await getSettings()), ...patch };
   await writeJSON(settingsFile(), next);
   multiOn = next.multiModels !== false;
   // Back to one model at a time: keep only the one used most recently.
   if (patch.multiModels === false) { const keep = latestEngine(); for (const e of [...pool]) if (e !== keep) await e.cancel(); if (keep && claudeOn) claudeStatus(false); }
   if (patch.modelNames) onEngineStatus({});
+  if (next.alexaOn && ("alexaNgrokToken" in patch || "alexaDomain" in patch || "alexaNgrokPath" in patch)) alexa.restartTunnel();
+  if ("alexaSkillId" in patch) alexa.clearError();
   return forWindow(next);
+});
+// You said yes to using the camera (this time, or always). On a Mac the system asks too.
+let cameraOkNow = false;
+ipcMain.handle("camera:allow", async (_e, yes) => {
+  cameraOkNow = !!yes;
+  if (yes && process.platform === "darwin" && systemPreferences.getMediaAccessStatus("camera") !== "granted") return systemPreferences.askForMediaAccess("camera");
+  return !!yes;
 });
 ipcMain.handle("sys:info", () => ({
   totalRamGB: Math.round(os.totalmem() / 1024 ** 3),
@@ -730,12 +769,28 @@ const FILES_PROMPT = "When the user asks you to create, write or make a file (co
   "with nothing left out. Use one code block per file. For example:\nFile: hello.py\n```python\nprint(\"Hello\")\n```\n" +
   "Start code files with a short comment saying what the file does and how to run it. After the code block, say in one or two sentences what the file is and how to use or run it. " +
   "Don't tell the user to copy and paste it, because the app saves it for them. For everything else, answer normally.";
-ipcMain.handle("chat:send", async (_e, { text, file, systemPrompt, turnId, convId = null, history = null, claudeSession = null, fast = false, files = false }) => {
-  if (files) systemPrompt = (systemPrompt || (file === CLAUDE_FILE ? CHAT_PROMPT : "")) + (systemPrompt || file === CLAUDE_FILE ? " " : "") + FILES_PROMPT;
+// What a model is allowed to do (My models → ⚙️). Everything is allowed unless you untick it.
+async function allowed(file, what) { const p = ((await getSettings()).modelPerms || {})[file] || {}; return p[what] !== false; }
+// Files you add to a chat: the text is read here, on this computer.
+ipcMain.handle("attach:read", async (_e, { name, bytes }) => {
+  const buf = Buffer.from(bytes);
+  if (buf.length > 40e6) throw new Error("That file is too big (over 40 MB).");
+  return extractFile(String(name), buf);
+});
+ipcMain.handle("chat:send", (_e, a) => chatSend(a));
+async function chatSend({ text, file, systemPrompt, turnId, convId = null, history = null, claudeSession = null, fast = false, files = false, images = [], via = "" }) {
+  const phoneOk = async (f) => { if ((via === "phone" || via === "alexa") && !(await allowed(f, "cast"))) throw new Error(`That model can't be used from your ${via === "alexa" ? "Alexa" : "phone"}. You can change that on the PC in My models (⚙️ on its card).`); };
+  await phoneOk(file);
+  const addFiles = (f) => { if (files) systemPrompt = (systemPrompt || (f === CLAUDE_FILE ? CHAT_PROMPT : "")) + (systemPrompt || f === CLAUDE_FILE ? " " : "") + FILES_PROMPT; };
+  if (file && !file.startsWith("@auto")) {
+    if (files && !(await allowed(file, "save"))) files = false;
+    if (images.length && !(await allowed(file, "upload"))) throw new Error("This model isn't allowed to read files you add. You can change that in My models (⚙️ on its card).");
+    addFiles(file);
+  }
   if (file === CLAUDE_FILE) {
     if (!claudeOn) await requireClaude({ fallback: true });
     await useClaude();
-    try { return await claudeSend({ text, systemPrompt: systemPrompt ?? null, turnId, convId, history, resume: claudeSession }); }
+    try { return await claudeSend({ text, systemPrompt: systemPrompt ?? null, turnId, convId, history, resume: claudeSession, images: images.slice(0, 10) }); }
     catch (err) { if (err.login || err.install) { openWeb("claude"); throw new Error(FALLBACK_MSG); } throw err; }
   }
   let routed = null;
@@ -743,30 +798,105 @@ ipcMain.handle("chat:send", async (_e, { text, file, systemPrompt, turnId, convI
     routed = await routeQuestion(text, file);
     send("chat:route", { turnId, ...routed });
     file = routed.file;
+    await phoneOk(file);
+    if (files && !(await allowed(file, "save"))) files = false;
+    addFiles(file);
   }
   if (claudeOn && !multiOn) claudeStatus(false);
   file ||= latestEngine()?.want;
   if (!file) throw new Error("Pick a model first.");
   const r = await onModel(file, "send", { text, file, path: modelPath(file), systemPrompt: systemPrompt ?? null, turnId, convId, history, fast });
   return routed ? { ...r, routed } : r;
+}
+
+// ---------- Use on your phone (cast.mjs) ----------
+// What a phone may pick: your models (not ones you've unticked "Be used from your phone" for), Optimal, and Claude if it's turned on.
+async function phoneChoices() {
+  const s = await getSettings(), perms = s.modelPerms || {};
+  const ok = (f) => (perms[f] || {}).cast !== false;
+  const local = (await listModels()).filter((m) => !(m.tags || []).includes("embeddings") && ok(m.file))
+    .map((m) => ({ file: m.file, name: m.name, quant: m.quant || "", running: !!engineOf(m.file)?.file }));
+  const out = [];
+  if (local.length) out.push({ file: "@auto", name: "✨ Optimal", quant: "the app picks the best model for each question", auto: true });
+  out.push(...local);
+  if (s.claudeEnabled && ok(CLAUDE_FILE)) out.push({ file: CLAUDE_FILE, name: (s.modelNames || {})[CLAUDE_FILE] || "Claude", quant: "online, your Pro plan", online: true });
+  return out;
+}
+// A phone or Alexa chat is saved like any chat (it starts with 📱 or 🔊).
+const saveRemoteChat = queued(async ({ id, title, messages, claudeSession = null, model, text, answer, device, mark = "📱" }) => {
+  if (!(await getSettings()).saveChats) return;
+  const file = chatFile(id), old = await readJSON(file, {});
+  const clean = (Array.isArray(messages) ? messages : []).slice(-200).map((m) => ({ role: m.role === "user" ? "user" : "bot", text: String(m.text || "").slice(0, 50000), at: +m.at || Date.now(), ...(m.role !== "user" ? { model: String(m.model || model) } : {}) }));
+  const c = { ...old, id, title: old.title || (mark + " " + String(title || text).replace(/^(📱|🔊)\s*/u, "").slice(0, 110)), model, modelName: await modelName(model), claudeSession,
+    messages: [...clean, { role: "user", text, at: Date.now(), from: device }, { role: "bot", text: answer, model, who: `${mark} on ${device}` }],
+    updated: Date.now(), created: old.created || Date.now() };
+  await writeJSON(file, c);
+  send("cast:changed", { chats: true });
 });
+const castAsks = new Map();
+const cast = createCast({
+  page: path.join(here, "renderer", "phone.html"),
+  getSettings,
+  saveSettings: async (patch) => { const next = { ...(await getSettings()), ...patch }; await writeJSON(settingsFile(), next); send("settings:changed", forWindow(next)); },
+  choices: phoneChoices,
+  chatSend,
+  stop: () => { claude.stop(); for (const e of pool) e.proc?.postMessage({ op: "stop" }); },
+  taps: castTaps,
+  saveChat: saveRemoteChat,
+  // A new phone: ask on the PC (bring the window up), and wait up to 2 minutes.
+  askApprove: ({ name, ip }) => new Promise((resolve) => {
+    const id = crypto.randomBytes(6).toString("hex");
+    const t = setTimeout(() => { castAsks.delete(id); send("cast:askDone", { id }); resolve(false); }, 120000);
+    castAsks.set(id, (yes) => { clearTimeout(t); castAsks.delete(id); resolve(!!yes); });
+    showWindow();
+    notify("A phone wants to use your models", `${name} (${ip}) scanned your code. Press Allow on the PC to let it in.`);
+    send("cast:ask", { id, name, ip });
+  }),
+  onChange: () => send("cast:changed", {}),
+});
+ipcMain.handle("cast:info", () => cast.info());
+// ---------- Amazon Alexa (alexa.mjs) ----------
+const alexa = createAlexa({ getSettings, chatSend, modelName, saveChat: saveRemoteChat, onStatus: (st) => send("alexa:status", st) });
+ipcMain.handle("alexa:status", async () => ({ ...alexa.status, ngrok: await alexa.findNgrok((await getSettings()).alexaNgrokPath), port: ALEXA_PORT }));
+ipcMain.handle("alexa:set", async (_e, on) => {
+  await writeJSON(settingsFile(), { ...(await getSettings()), alexaOn: !!on });
+  if (on) await alexa.start().catch(() => {}); else await alexa.stop();
+  return alexa.status;
+});
+ipcMain.handle("alexa:model", async () => JSON.stringify(interactionModel((await getSettings()).alexaInvocation), null, 2));
+ipcMain.handle("alexa:restart", () => alexa.restartTunnel());
+ipcMain.handle("cast:set", async (_e, on) => {
+  const s = await getSettings();
+  await writeJSON(settingsFile(), { ...s, castOn: !!on });
+  if (on) await cast.start(); else await cast.stop();
+  return cast.info();
+});
+ipcMain.handle("cast:answer", (_e, id, yes) => castAsks.get(id)?.(yes));
+ipcMain.handle("cast:newCode", async () => { await writeJSON(settingsFile(), { ...(await getSettings()), castToken: crypto.randomBytes(16).toString("hex") }); return cast.info(); });
+ipcMain.handle("cast:remove", async (_e, id) => { const s = await getSettings(); await writeJSON(settingsFile(), { ...s, castDevices: (s.castDevices || []).filter((d) => d.id !== id) }); return cast.info(); });
 // ---------- Updates from GitHub releases ----------
-// Set DEFAULT_UPDATE_REPO (or "Updates" in Settings) to "owner/name" of the GitHub repo that publishes releases.
-const DEFAULT_UPDATE_REPO = "";
+// Releases are published by .github/workflows/release.yml (Windows installer + Linux AppImage, with latest.yml / latest-linux.yml).
+// - Installed on Windows, or the Linux AppImage: downloads in the background and installs on restart (electron-updater).
+// - Anything else (running from the source folder, or a Linux copy that isn't the AppImage): finds the newest release on GitHub
+//   and downloads the right file for this system into Downloads, so you can switch to it.
+const DEFAULT_UPDATE_REPO = "GeorgeOverton/open-model-desktop";
 const { autoUpdater } = electronUpdater;
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = true;
 let updateState = { state: "idle" };
+let manualRelease = null;      // { version, asset: { name, url, size }, page }
 const setUpdate = (st) => { updateState = { ...updateState, ...st }; send("update:status", updateState); };
 autoUpdater.on("download-progress", (p) => setUpdate({ state: "downloading", percent: Math.round(p.percent || 0) }));
 autoUpdater.on("update-downloaded", (info) => { setUpdate({ state: "ready", latest: info.version }); notify("Update ready", `Version ${info.version} is downloaded. Restart Open Model Desktop to finish.`); });
 autoUpdater.on("error", (err) => setUpdate({ state: "error", message: friendlyUpdateError(err) }));
 function friendlyUpdateError(err) {
   const m = String(err?.message || err);
-  if (/404|Unable to find latest version|No published versions|Cannot find latest/i.test(m)) return "No releases found in that GitHub repository yet. Publish a release first (see the steps below).";
-  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|net::/i.test(m)) return "Couldn't reach GitHub. Check your internet connection.";
-  if (/latest\.yml/i.test(m)) return "The latest release is missing its latest.yml file. Publish it with the release workflow (see the steps below).";
-  return "Couldn't check for updates: " + m.split("\n")[0].slice(0, 200);
+  if (/latest-linux\.yml/i.test(m)) return "The newest release doesn't have the Linux update file (latest-linux.yml). Publish releases with the Release workflow on GitHub (see below).";
+  if (/latest\.yml/i.test(m)) return "The newest release doesn't have the Windows update file (latest.yml). Publish releases with the Release workflow on GitHub (see below).";
+  if (/404|Unable to find latest version|No published versions|Cannot find latest/i.test(m)) return "No releases found in that GitHub repository yet. Publish one with the Release workflow (see below).";
+  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|net::/i.test(m)) return "Couldn't reach GitHub. Check your internet connection.";
+  if (/rate limit/i.test(m)) return "GitHub says too many checks from this network. Try again in an hour.";
+  return "Couldn't update: " + m.split("\n")[0].slice(0, 200);
 }
 // A copy built by the GitHub release workflow carries its repository in resources/app-update.yml.
 function builtInRepo() {
@@ -777,35 +907,89 @@ function builtInRepo() {
   } catch { return ""; }
 }
 async function updateRepo() {
-  const r = ((await getSettings()).updateRepo || DEFAULT_UPDATE_REPO || builtInRepo()).trim().replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/, "").replace(/\/+$/, "");
+  const r = ((await getSettings()).updateRepo || builtInRepo() || DEFAULT_UPDATE_REPO).trim().replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/, "").replace(/\/+$/, "");
   return /^[\w.-]+\/[\w.-]+$/.test(r) ? r : "";
 }
+// How this copy can update itself.
+function updateMode() {
+  if (!app.isPackaged) return "manual";                                   // running from the source folder
+  if (process.platform === "linux") return process.env.APPIMAGE ? "auto" : "manual";
+  if (process.platform === "win32") return "auto";
+  return "manual";
+}
+const newer = (a, b) => { const x = String(a).replace(/^v/, "").split(/[.-]/).map((n) => parseInt(n, 10) || 0), y = String(b).replace(/^v/, "").split(/[.-]/).map((n) => parseInt(n, 10) || 0); for (let k = 0; k < 3; k++) if ((x[k] || 0) !== (y[k] || 0)) return (x[k] || 0) > (y[k] || 0); return false; };
+const assetFor = (assets) => process.platform === "linux" ? assets.find((a) => /\.AppImage$/i.test(a.name)) : process.platform === "win32" ? assets.find((a) => /Setup.*\.exe$/i.test(a.name)) : null;
 async function checkForUpdates() {
-  if (!app.isPackaged) throw new Error("Updates work in the installed app (the one from the setup wizard), not when running from the source folder.");
   const repo = await updateRepo();
-  if (!repo) throw new Error("Add the GitHub repository that publishes updates first (Settings → Updates).");
-  const [owner, name] = repo.split("/");
-  autoUpdater.setFeedURL({ provider: "github", owner, repo: name });
-  setUpdate({ state: "checking", repo });
+  if (!repo && !process.env.OMD_UPDATE_URL) throw new Error("Add the GitHub repository that publishes updates first (below).");
+  const mode = updateMode();
+  setUpdate({ state: "checking", repo, mode, message: "" });
   try {
-    const r = await autoUpdater.checkForUpdates();
-    const latest = r?.updateInfo?.version || app.getVersion();
-    const available = r?.isUpdateAvailable ?? (latest !== app.getVersion());
-    setUpdate({ state: available ? "available" : "current", latest, current: app.getVersion(), notes: String(r?.updateInfo?.releaseNotes || "").replace(/<[^>]+>/g, "").slice(0, 600) });
+    if (mode === "auto") {
+      if (process.env.OMD_UPDATE_URL) autoUpdater.setFeedURL({ provider: "generic", url: process.env.OMD_UPDATE_URL });   // tests only
+      else { const [owner, name] = repo.split("/"); autoUpdater.setFeedURL({ provider: "github", owner, repo: name }); }
+      const r = await autoUpdater.checkForUpdates();
+      const latest = r?.updateInfo?.version || app.getVersion();
+      const available = r?.isUpdateAvailable ?? newer(latest, app.getVersion());
+      setUpdate({ state: available ? "available" : "current", latest, current: app.getVersion(), notes: String(r?.updateInfo?.releaseNotes || "").replace(/<[^>]+>/g, "").slice(0, 600) });
+      return updateState;
+    }
+    // Manual: ask GitHub for the newest release and pick this system's file.
+    const api = process.env.OMD_UPDATE_API || `https://api.github.com/repos/${repo}/releases/latest`;
+    const res = await net.fetch(api, { headers: { accept: "application/vnd.github+json", "user-agent": "OpenModelDesktop" } });
+    if (res.status === 404) throw new Error("No published versions");
+    if (res.status === 403) throw new Error("rate limit");
+    if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+    const rel = await res.json();
+    const latest = String(rel.tag_name || "").replace(/^[^\d]*/, "");
+    const a = assetFor(rel.assets || []);
+    manualRelease = { version: latest, page: rel.html_url, asset: a ? { name: a.name, url: a.browser_download_url, size: a.size } : null };
+    const available = newer(latest, app.getVersion());
+    setUpdate({ state: available ? "available" : "current", latest, current: app.getVersion(), page: rel.html_url, file: a?.name || "", notes: String(rel.body || "").slice(0, 600) });
     return updateState;
   } catch (err) { setUpdate({ state: "error", message: friendlyUpdateError(err) }); throw new Error(friendlyUpdateError(err)); }
 }
-ipcMain.handle("update:status", async () => ({ ...updateState, current: app.getVersion(), packaged: app.isPackaged, repo: await updateRepo() }));
+async function downloadUpdate() {
+  if (updateState.mode === "auto") { setUpdate({ state: "downloading", percent: 0 }); await autoUpdater.downloadUpdate(); return updateState; }
+  if (!manualRelease?.asset) { if (manualRelease?.page) shell.openExternal(manualRelease.page); throw new Error("There's no file for this system in the newest release, so its page is open in your browser."); }
+  const { name, url, size } = manualRelease.asset;
+  const dest = path.join(app.getPath("downloads"), name);
+  setUpdate({ state: "downloading", percent: 0 });
+  const res = await net.fetch(url);
+  if (!res.ok || !res.body) throw new Error(`Download failed (${res.status}).`);
+  const total = +res.headers.get("content-length") || size || 0;
+  let got = 0, last = 0;
+  const part = dest + ".part";
+  const out = fs.createWriteStream(part);
+  for await (const chunk of Readable.fromWeb(res.body)) {
+    got += chunk.length;
+    if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
+    const pc = total ? Math.round((got / total) * 100) : 0;
+    if (pc !== last) { last = pc; setUpdate({ state: "downloading", percent: pc }); }
+  }
+  await new Promise((r, j) => out.end((e) => (e ? j(e) : r())));
+  await fsp.rename(part, dest);
+  if (process.platform === "linux") await fsp.chmod(dest, 0o755);
+  setUpdate({ state: "saved", path: dest, latest: manualRelease.version });
+  return updateState;
+}
+ipcMain.handle("update:status", async () => ({ ...updateState, current: app.getVersion(), packaged: app.isPackaged, repo: await updateRepo(), mode: updateMode(), platform: process.platform, appImage: !!process.env.APPIMAGE }));
 ipcMain.handle("update:check", () => checkForUpdates());
-ipcMain.handle("update:download", async () => { setUpdate({ state: "downloading", percent: 0 }); await autoUpdater.downloadUpdate(); return updateState; });
+ipcMain.handle("update:download", async () => { try { return await downloadUpdate(); } catch (err) { setUpdate({ state: "error", message: friendlyUpdateError(err) }); throw new Error(friendlyUpdateError(err)); } });
 ipcMain.handle("update:install", () => { quitting = true; autoUpdater.quitAndInstall(false, true); });
+// The file the manual update downloaded: show it, or (Linux AppImage) start it and close this copy.
+ipcMain.handle("update:openSaved", async (_e, how) => {
+  const p = updateState.path; if (!p) return;
+  if (how === "run" && process.platform === "linux") { spawn(p, [], { detached: true, stdio: "ignore" }).unref(); quitting = true; setTimeout(() => app.quit(), 800); return; }
+  shell.showItemInFolder(p);
+});
 // Check quietly a little after start-up, and tell you if there's a new version.
 app.whenReady().then(() => setTimeout(async () => {
-  if (!app.isPackaged || !(await updateRepo())) return;
+  if (!(await updateRepo())) return;
   try { const st = await checkForUpdates(); if (st.state === "available") notify("Update available", `Version ${st.latest} of Open Model Desktop is ready to download. Open Settings → Updates.`); } catch {}
 }, 15000));
 
-app.on("will-quit", () => { for (const e of pool) e.proc?.kill(); router.proc?.kill(); try { fs.unlinkSync(bridgeFile()); } catch {} });
+app.on("will-quit", () => { cast.stop(); alexa.stop(); for (const e of pool) e.proc?.kill(); router.proc?.kill(); try { fs.unlinkSync(bridgeFile()); } catch {} });
 
 // ---------- Use your models from the Claude app ----------
 // The Claude app (Claude Desktop) starts mcp-server.mjs, which talks to this small server. It only

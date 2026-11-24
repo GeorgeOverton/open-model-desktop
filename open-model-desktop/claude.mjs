@@ -115,7 +115,7 @@ export function createClaude({ getModel, onChunk, workDir }) {
       return this.status();
     },
 
-    async send({ text, systemPrompt: sp = null, turnId, convId = null, history = null, resume = null }, retried = false) {
+    async send({ text, systemPrompt: sp = null, turnId, convId = null, history = null, resume = null, images = [] }, retried = false) {
       if ((sp ?? null) !== systemPrompt) this.reset(sp);
       // Switching to another saved chat: pick up its Claude conversation again.
       if (convId !== conv) { sessionId = (convId && resume) || null; conv = convId; }
@@ -129,11 +129,15 @@ export function createClaude({ getModel, onChunk, workDir }) {
       const model = await getModel();
       const args = [...bin.pre, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         "--tools", "", "--strict-mcp-config", "--system-prompt", systemPrompt || CHAT_PROMPT,
-        ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : [])];
+        ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : []),
+        // Pictures you add go in as a message with image blocks.
+        ...(images.length ? ["--input-format", "stream-json"] : [])];
       stopped = false;
       const proc = spawn(bin.command, args, { cwd: workDir, env: childEnv(bin.env), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       child = proc;
-      proc.stdin.end(prompt);
+      proc.stdin.end(images.length
+        ? JSON.stringify({ type: "user", message: { role: "user", content: [...images.map((im) => ({ type: "image", source: { type: "base64", media_type: im.mime, data: im.data } })), { type: "text", text: prompt }] } }) + "\n"
+        : prompt);
 
       let buf = "", errText = "", streamed = "", result = null, newSession = null, modelUsed = "";
       const handle = (m) => {
@@ -165,7 +169,7 @@ export function createClaude({ getModel, onChunk, workDir }) {
 
       const answer = result?.result ?? streamed;
       if ((!result || result.is_error || code !== 0) && sessionId && !retried && /no conversation found|session.*not found/i.test(errText + (result?.result || ""))) {
-        sessionId = null; return this.send({ text, systemPrompt: sp, turnId, convId, history, resume: null }, true);
+        sessionId = null; return this.send({ text, systemPrompt: sp, turnId, convId, history, resume: null, images }, true);
       }
       if (!result || result.is_error || code !== 0) throw friendly([result?.result, errText, result?.subtype].filter(Boolean).join("\n") || `Claude Code stopped (code ${code}).`);
       if (LIMIT_RE.test(answer) && answer.length < 300 && !streamed.trim()) throw friendly(answer);

@@ -74,8 +74,10 @@
   $("#micAllowed").addEventListener("change", (e) => { save({ micAllowed: e.target.checked }); if (!e.target.checked) bus.dispatchEvent(new CustomEvent("micOff")); });
   $("#multiModels").addEventListener("change", (e) => save({ multiModels: e.target.checked }));
   $("#filesAutoRun").addEventListener("change", (e) => save({ filesAutoRun: e.target.checked }));
+  $("#fileAccess").addEventListener("change", (e) => save({ fileAccess: e.target.value }));
+  $("#cameraAccess").addEventListener("change", (e) => save({ cameraAccess: e.target.value }));
   // "Always" buttons on file cards change these, so keep the boxes in step.
-  bus.addEventListener("settings", (e) => { $("#filesAutoSave").checked = !!e.detail.filesAutoSave; $("#filesAutoRun").checked = !!e.detail.filesAutoRun; $("#micAllowed").checked = !!e.detail.micAllowed; });
+  bus.addEventListener("settings", (e) => { $("#filesAutoSave").checked = !!e.detail.filesAutoSave; $("#filesAutoRun").checked = !!e.detail.filesAutoRun; $("#micAllowed").checked = !!e.detail.micAllowed; $("#fileAccess").value = e.detail.fileAccess || "ask"; $("#cameraAccess").value = e.detail.cameraAccess || "ask"; });
   window.desktop.files.where().then((p) => { if (p) $("#filesWhere").textContent = p; }).catch(() => {});
   $("#delAllWrap").addEventListener("click", async (e) => {
     const act = e.target.closest("button")?.id;
@@ -175,34 +177,45 @@
   function renderUpdates() {
     const box = $("#updateBox");
     const st = upd;
+    const manual = st.mode === "manual";
+    const where = st.platform === "linux" ? "Linux" : st.platform === "win32" ? "Windows" : "this computer";
     const msg = {
       idle: "", checking: "Checking GitHub for a newer version…",
       current: `✓ You have the newest version${st.latest ? ` (${esc(st.latest)})` : ""}.`,
-      available: `🎉 Version <strong>${esc(st.latest || "")}</strong> is available.`,
+      available: manual ? `🎉 Version <strong>${esc(st.latest || "")}</strong> is available${st.file ? `: ${esc(st.file)}` : ""}.` : `🎉 Version <strong>${esc(st.latest || "")}</strong> is available.`,
       downloading: `Downloading the update… ${st.percent || 0}%`,
       ready: `✓ Version ${esc(st.latest || "")} is downloaded. Restart to finish.`,
+      saved: `✓ Saved <b>${esc((st.path || "").split(/[\\/]/).pop())}</b> in your Downloads folder.` + (st.platform === "linux" ? " Start it, and from then on it updates itself." : " Run it to install the new version (your models and chats are kept)."),
       error: `<span class="warn">${esc(st.message || "Couldn't check for updates.")}</span>`,
     }[st.state || "idle"];
+    const action = st.state === "available" ? `<button class="btn primary" id="updDownload">${manual ? "Download it" : "Download update"}</button>`
+      : st.state === "ready" ? `<button class="btn primary" id="updInstall">Restart to update</button>`
+      : st.state === "saved" ? (st.platform === "linux" ? `<button class="btn primary" id="updRun">Start the new version</button>` : `<button class="btn primary" id="updShow">Show the file</button>`)
+      : `<button class="btn" id="updCheck" ${st.state === "checking" || st.state === "downloading" ? "disabled" : ""}>Check for updates</button>`;
+    const how = !manual ? `<p class="small muted">${where === "Linux" ? "This is the Linux AppImage: updates download in the background and install when you restart." : "Updates download in the background and install when you restart. Your models, chats and settings are kept."}</p>`
+      : !st.packaged ? `<p class="small muted">You're running the app from its source folder, so it can't replace itself. Check for updates downloads the newest ${st.platform === "linux" ? "<b>Linux AppImage</b> (one file that updates itself from then on; you may need <code>sudo apt install libfuse2</code> once)" : st.platform === "win32" ? "<b>Windows installer</b>" : "version"} into Downloads.</p>`
+      : `<p class="small muted">This Linux copy isn't the AppImage, so it can't replace itself. Check for updates downloads the AppImage, which updates itself from then on.</p>`;
     box.innerHTML = `
-      <div class="row"><h3>Open Model Desktop ${esc(st.current || "")}</h3>
-        <span>${st.state === "available" ? `<button class="btn primary" id="updDownload">Download update</button>`
-          : st.state === "ready" ? `<button class="btn primary" id="updInstall">Restart to update</button>`
-          : `<button class="btn" id="updCheck" ${st.state === "checking" || st.state === "downloading" ? "disabled" : ""}>Check for updates</button>`}</span></div>
+      <div class="row"><h3>Open Model Desktop ${esc(st.current || "")}</h3><span>${action}</span></div>
       ${msg ? `<p>${msg}</p>` : ""}
       ${st.state === "downloading" ? `<div class="bar"><span style="width:${st.percent || 0}%"></span></div>` : ""}
       ${st.notes && st.state === "available" ? `<p class="small muted">${esc(st.notes)}</p>` : ""}
-      ${st.packaged || st.state === "error" ? "" : `<p class="small muted">Updates work in the installed app (the one from the setup wizard). You're running it from the source folder.</p>`}
-      <label class="small" for="updRepo"><strong>GitHub repository with the updates</strong> <span class="muted">(like <code>yourname/open-model-desktop</code>)</span></label>
-      <div class="srow"><input id="updRepo" placeholder="owner/name" value="${esc(settings.updateRepo || st.repo || "")}" autocomplete="off"><button class="btn sm" id="updSave">Save</button></div>
-      <p class="small muted">The app checks this repository's Releases on GitHub a few seconds after it starts, and tells you when there's a newer version. Nothing is downloaded until you press Download.</p>`;
+      ${how}
+      <details class="updmore"><summary class="small">Where updates come from</summary>
+        <label class="small" for="updRepo"><strong>GitHub repository with the updates</strong> <span class="muted">(owner/name)</span></label>
+        <div class="srow"><input id="updRepo" placeholder="${esc(st.repo || "owner/name")}" value="${esc(settings.updateRepo || "")}" autocomplete="off"><button class="btn sm" id="updSave">Save</button></div>
+        <p class="small muted">Leave it empty to use <code>${esc(st.repo || "")}</code>. The app checks its Releases a few seconds after it starts and tells you when there's a newer version. Nothing is downloaded until you press Download.</p>
+      </details>`;
     $("#updCheck")?.addEventListener("click", async () => { try { await D.updates.check(); } catch (err) { upd = { ...upd, state: "error", message: clean(err) }; renderUpdates(); } });
     $("#updDownload")?.addEventListener("click", async () => { try { await D.updates.download(); } catch (err) { upd = { ...upd, state: "error", message: clean(err) }; renderUpdates(); } });
     $("#updInstall")?.addEventListener("click", () => D.updates.install());
+    $("#updRun")?.addEventListener("click", () => D.updates.openSaved("run"));
+    $("#updShow")?.addEventListener("click", () => D.updates.openSaved("show"));
     $("#updSave").addEventListener("click", async () => {
       const v = $("#updRepo").value.trim().replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/, "").replace(/\/+$/, "");
       if (v && !/^[\w.-]+\/[\w.-]+$/.test(v)) { toast("That doesn't look right. Use owner/name, like yourname/open-model-desktop."); return; }
       await save({ updateRepo: v }); upd = { ...upd, ...(await D.updates.status()), state: "idle" }; renderUpdates();
-      toast(v ? "Saved. Press Check for updates." : "Cleared.");
+      toast(v ? "Saved. Press Check for updates." : "Back to the usual place.");
     });
   }
   D.updates.onStatus((st) => { upd = { ...upd, ...st }; renderUpdates(); });
@@ -267,6 +280,8 @@
     $("#micAllowed").checked = !!settings.micAllowed;
     $("#multiModels").checked = settings.multiModels !== false;
     $("#filesAutoRun").checked = !!settings.filesAutoRun;
+    $("#fileAccess").value = settings.fileAccess || "ask";
+    $("#cameraAccess").value = settings.cameraAccess || "ask";
     $("#followUp").value = String(settings.followUpSeconds ?? 8);
     $("#hfToken").value = settings.hfToken || "";
     fillSystemVoices(); renderTts(); renderVoices();

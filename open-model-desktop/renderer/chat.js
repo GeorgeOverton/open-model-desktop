@@ -17,10 +17,10 @@
   });
 
   // Shared by the Chat screen and Voice mode. convId + history let a saved chat carry on where it left off.
-  async function ask({ file, text, systemPrompt, onText, onThought, onRoute, convId, history, claudeSession, fast, files }) {
+  async function ask({ file, text, systemPrompt, onText, onThought, onRoute, convId, history, claudeSession, fast, files, images }) {
     const turnId = Math.random().toString(36).slice(2);
     handlers.set(turnId, { onText, onThought, onRoute });
-    try { return await D.chat.send({ text, file, systemPrompt: systemPrompt || null, turnId, convId: convId || null, history: history || null, claudeSession: claudeSession || null, fast: !!fast, files: !!files }); }
+    try { return await D.chat.send({ text, file, systemPrompt: systemPrompt || null, turnId, convId: convId || null, history: history || null, claudeSession: claudeSession || null, fast: !!fast, files: !!files, images: images || [] }); }
     finally { handlers.delete(turnId); }
   }
   window.OMDChat = { ask, md: (t) => md(t), stop: () => D.chat.stop(), get busy() { return busy; }, set busy(v) { busy = v; setBusy(v); } };
@@ -80,11 +80,13 @@
     });
     return { html, blocks };
   }
-  const filesOn = () => setting("makeFiles") !== false;
+  // Making files can be off for everyone (Settings) or for one model (My models → ⚙️).
+  const filesOn = (file) => setting("makeFiles") !== false && (!file || window.OMD.perms(file).save);
+  const mayRun = (host) => window.OMD.perms(host._bm?.model || "").run;
   // Show an answer in el; host keeps the blocks so the buttons work.
   function showIn(host, el, text, opts = {}) {
     const bm = opts.bm || host._bm;
-    const r = renderAnswer(text, { files: filesOn(), saved: bm?.files || [], declined: bm?.declined || [], ...opts });
+    const r = renderAnswer(text, { files: filesOn(bm?.model), saved: bm?.files || [], declined: bm?.declined || [], ...opts });
     el.innerHTML = r.html;
     host.classList.add("fhost");
     host._blocks = r.blocks; host._el = el;
@@ -143,6 +145,9 @@
         b.asking = false; b.declined = true;
         if (host._bm) host._bm.declined = [...new Set([...(host._bm.declined || []), b.i])];
         redraw(host, b); host._onChange?.();
+      } else if ((f === "open" || f === "run" || f === "always-run") && F.runsCode(name) && !mayRun(host)) {
+        toast(`${window.OMD.nameOf(host._bm?.model) || "This model"} isn't allowed to open programs, so here's the file in its folder instead. You can change that in My models (⚙️ on its card).`, 6500);
+        await openBlock(host, b, "reveal");
       } else if (f === "open") {
         if (F.runsCode(name) && !setting("filesAutoRun")) { b.confirmRun = true; redraw(host, b); host._el.querySelector(`.filecard[data-b="${b.i}"] [data-f=run]`)?.focus(); return; }
         await openBlock(host, b, "open");
@@ -198,7 +203,7 @@
     el.scrollIntoView({ block: "end" });
     return el;
   }
-  const userEl = (text) => addEl("user", esc(text).replace(/\n/g, "<br>"));
+  const userEl = (text, att) => addEl("user", (att?.length ? `<div class="achips">${att.map((a) => chipHtml(a, false)).join("")}</div>` : "") + esc(text).replace(/\n/g, "<br>"));
   const voiceById = (id) => window.Speaker.VOICES?.find((v) => v.id === id) || window.Speaker.defaultVoice;
   function botEl(m, ctx = {}) {
     const v = voiceById(m.voice);
@@ -232,7 +237,7 @@
     } catch (err) { console.warn("Couldn't save chat:", err); }
   }
   // Earlier messages to hand to the model, so a reopened chat (or a different model) knows what was said.
-  const historyOf = (msgs) => msgs.filter((m) => !m.error && !m.pending && m.text).map((m) => ({ role: m.role === "user" ? "user" : "bot", text: m.text }));
+  const historyOf = (msgs) => msgs.filter((m) => !m.error && !m.pending && (m.ctx || m.text)).map((m) => ({ role: m.role === "user" ? "user" : "bot", text: m.ctx || m.text }));
 
   // ---------- Saved chats list ----------
   const DAY = 86400000;
@@ -270,7 +275,7 @@
     cur = { ...c, messages: c.messages || [] };
     $("#messages").innerHTML = "";
     let request = "";
-    cur.messages.forEach((m, k) => { if (m.role === "user") { request = m.text; userEl(m.text); } else botEl(m, { request, earlier: earlierNames(cur, k) }); });
+    cur.messages.forEach((m, k) => { if (m.role === "user") { request = m.text; userEl(m.text, m.attach); } else botEl(m, { request, earlier: earlierNames(cur, k) }); });
     const mine = window.OMD.chatChoices;
     if (c.model && mine.some((m) => m.file === c.model)) { chatFile = c.model; store.set("chatModel", chatFile); fillModels(); }
     else if (c.model) toast(`${c.modelName || "The model this chat used"} isn't available now, so it will carry on with the model picked at the top.`, 5000);
@@ -331,11 +336,207 @@
   prompt.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
   $("#stopBtn").addEventListener("click", () => { D.chat.stop(); window.Speaker.stop(); });
 
+  // ---------- Files and pictures you add (📎, drag and drop, or paste) ----------
+  // The app asks first (Settings → Saved chats: "Files you add"). Documents are read on this computer and their text is given
+  // to the model. Pictures go to models that can see them (Claude); other models are told they can't.
+  let attached = [];           // { id, name, kind: "text" | "image", text, mime, data, thumb, size }
+  let allowedThisTime = false;
+  const MB = 1e6;
+  const canSee = (file) => file === "@claude";
+  const chatName = () => window.OMD.nameOf(chatFile) || "This model";
+  async function mayAddFiles() {
+    const a = setting("fileAccess") || "ask";
+    if (a === "always" || allowedThisTime) return true;
+    if (a === "never") { toast("Adding files is turned off. You can turn it on in Settings → Saved chats.", 5000); return false; }
+    const r = await window.OMD.askDialog({
+      title: "Let the app read files you add?",
+      html: `<p>To use a file in a chat, the app opens it on this computer and gives what's in it to the model you're chatting with.</p>
+        <p class="small muted">Local models never send it anywhere. If you're chatting with Claude, the file goes to Claude online with your message.</p>`,
+      yes: "Allow", no: "Don't allow", remember: true });
+    if (r.remember) await window.OMDSettings.save({ fileAccess: r.yes ? "always" : "never" });
+    if (r.yes) allowedThisTime = true;
+    if (!r.yes) toast(r.remember ? "Files won't be added. You can change that in Settings → Saved chats." : "The file wasn't added.", 4500);
+    return r.yes;
+  }
+  const readAs = (file, how) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(fr.error); fr[how](file); });
+  const loadImg = (src) => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("This picture couldn't be opened.")); im.src = src; });
+  function shrink(im, max, type = "image/jpeg") {
+    const k = Math.min(1, max / Math.max(im.naturalWidth, im.naturalHeight));
+    const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(im.naturalWidth * k)); c.height = Math.max(1, Math.round(im.naturalHeight * k));
+    const g = c.getContext("2d"); if (type === "image/jpeg") { g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); }
+    g.drawImage(im, 0, 0, c.width, c.height);
+    return c.toDataURL(type, 0.88);
+  }
+  async function readOne(file) {
+    if (file.size > 40 * MB) throw new Error("it's bigger than 40 MB");
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (/^(png|jpe?g|gif|webp|bmp)$/.test(ext) || /^image\//.test(file.type)) {
+      let url = await readAs(file, "readAsDataURL");
+      const im = await loadImg(url);
+      // Claude takes PNG, JPEG, GIF and WebP up to about 5 MB: make big or unusual pictures smaller.
+      if (ext === "bmp" || !/^data:image\/(png|jpeg|gif|webp)/.test(url) || file.size > 3.5 * MB || Math.max(im.naturalWidth, im.naturalHeight) > 2000) url = shrink(im, 1600);
+      const [, mime, data] = url.match(/^data:([^;]+);base64,(.*)$/);
+      return { kind: "image", mime, data, thumb: shrink(im, 160) };
+    }
+    const r = await D.files.read({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+    if (r.kind === "image") throw new Error("this picture couldn't be opened");
+    if (!r.text.trim()) throw new Error("there's no text in it");
+    return { kind: "text", text: r.text };
+  }
+  async function addFiles(files, { photo = false } = {}) {
+    files = [...files].filter((f) => f && f.name !== undefined);
+    if (!files.length) return;
+    if (busy) { toast("Wait for the answer to finish first."); return; }
+    if (!chatFile) { toast("Download a model first, then pick it at the top."); return; }
+    if (!window.OMD.perms(chatFile).upload) { toast(`${chatName()} isn't allowed to read files you add. You can change that in My models (⚙️ on its card), or pick another model.`, 6000); return; }
+    if (!photo && !(await mayAddFiles())) return;   // a photo you just took was already asked about (camera)
+    if (attached.length + files.length > 10) { toast("You can add up to 10 files to one message."); files = files.slice(0, Math.max(0, 10 - attached.length)); }
+    const pics = [];
+    for (const f of files) {
+      const id = Math.random().toString(36).slice(2);
+      const item = { id, name: f.name || "picture.png", size: f.size, reading: true };
+      attached.push(item); renderChips();
+      try { Object.assign(item, await readOne(f)); delete item.reading; if (item.kind === "image") pics.push(item); }
+      catch (err) { attached = attached.filter((x) => x.id !== id); toast(`Couldn't add ${item.name}: ${errText(err)}`, 6000); }
+      renderChips();
+    }
+    if (pics.length && !canSee(chatFile)) toast(`${chatName()} can't see pictures, so it will only be told you added ${pics.length === 1 ? "one" : "them"}. Claude can see pictures: pick it at the top.`, 7000);
+    prompt.focus();
+  }
+  function chipHtml(a, removable) {
+    const icon = a.kind === "image" ? (a.thumb ? `<img src="${esc(a.thumb)}" alt="">` : "🖼️") : /\.pdf$/i.test(a.name) ? "📕" : /\.(xlsx?|csv|ods)$/i.test(a.name) ? "📊" : /\.(pptx?|odp)$/i.test(a.name) ? "📽️" : "📄";
+    const sub = a.reading ? "Reading…" : a.kind === "image" ? "Picture" : `${(a.chars ?? a.text?.length ?? 0).toLocaleString()} characters${a.cut ? " (cut short)" : ""}`;
+    return `<span class="achip ${a.kind || ""}" title="${esc(a.name)}"><span class="aic">${icon}</span><span class="atx"><b>${esc(a.name)}</b><span class="small muted">${esc(sub)}</span></span>${
+      removable ? `<button type="button" class="ax" data-unattach="${esc(a.id)}" aria-label="Remove ${esc(a.name)}" title="Remove">×</button>` : ""}</span>`;
+  }
+  function renderChips() {
+    const row = $("#attachRow");
+    row.hidden = !attached.length;
+    row.innerHTML = attached.map((a) => chipHtml(a, true)).join("");
+  }
+  $("#attachRow").addEventListener("click", (e) => { const x = e.target.closest("[data-unattach]"); if (x) { attached = attached.filter((a) => a.id !== x.dataset.unattach); renderChips(); prompt.focus(); } });
+  $("#attachBtn").addEventListener("click", () => {
+    const open = amenu.hidden; amenu.hidden = !open; $("#attachBtn").setAttribute("aria-expanded", String(open));
+    if (open) amenu.querySelector("button").focus();
+  });
+  // ---------- Taking a photo (📎 → Take a photo) ----------
+  // Asks first (Settings → Saved chats: "Camera"), like adding files. The photo is added like any picture.
+  let camAllowedThisTime = false;
+  async function mayUseCamera() {
+    const a = setting("cameraAccess") || "ask";
+    if (a === "never") { toast("Using the camera is turned off. You can turn it on in Settings → Saved chats.", 5000); return false; }
+    if (a !== "always" && !camAllowedThisTime) {
+      const r = await window.OMD.askDialog({ title: "Let the app use your camera?",
+        html: `<p>The app turns on your camera so you can take a photo to show the model. The camera turns off as soon as you take the photo or close the window.</p>
+          <p class="small muted">Nothing is recorded. The photo stays on this computer unless you send it to Claude.</p>`, yes: "Allow", no: "Don't allow", remember: true });
+      if (r.remember) await window.OMDSettings.save({ cameraAccess: r.yes ? "always" : "never" });
+      if (!r.yes) { toast(r.remember ? "The camera won't be used. You can change that in Settings → Saved chats." : "The camera wasn't turned on.", 4500); return false; }
+      camAllowedThisTime = true;
+    }
+    return (await D.sys.allowCamera(true)) !== false || (toast("Your computer didn't allow the camera. Check its privacy settings.", 6000), false);
+  }
+  const cam = { dlg: $("#camDlg"), stream: null, shot: null };
+  function camStop() { cam.stream?.getTracks().forEach((t) => t.stop()); cam.stream = null; }
+  async function camStart(deviceId) {
+    camStop();
+    const v = $("#camVideo"), msg = $("#camMsg");
+    msg.textContent = "Starting the camera…"; msg.hidden = false; v.hidden = true;
+    try {
+      cam.stream = await navigator.mediaDevices.getUserMedia({ video: deviceId ? { deviceId: { exact: deviceId }, width: { ideal: 1600 } } : { width: { ideal: 1600 }, height: { ideal: 1200 } }, audio: false });
+      v.srcObject = cam.stream; await v.play().catch(() => {});
+      msg.hidden = true; v.hidden = false;
+      const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+      const cur = cam.stream.getVideoTracks()[0]?.getSettings().deviceId;
+      $("#camPick").hidden = cams.length < 2;
+      $("#camPick").innerHTML = cams.map((d, k) => `<option value="${esc(d.deviceId)}" ${d.deviceId === cur ? "selected" : ""}>${esc(d.label || "Camera " + (k + 1))}</option>`).join("");
+      $("#camTake").disabled = false;
+    } catch (err) {
+      $("#camTake").disabled = true;
+      msg.textContent = /NotFound|DevicesNotFound|OverconstrainedError/.test(err.name) ? "No camera was found. Plug one in, or check it isn't switched off."
+        : /NotAllowed|Permission/.test(err.name) ? "The camera isn't allowed. On Windows: Settings → Privacy & security → Camera, and let desktop apps use it."
+        : /NotReadable|TrackStart/.test(err.name) ? "The camera is busy. Close other apps that use it (like Teams or Zoom) and try again."
+        : "Couldn't start the camera: " + err.message;
+    }
+  }
+  function camShow(state) {   // "live" or "shot"
+    $("#camVideo").hidden = state !== "live" || !cam.stream; $("#camShot").hidden = state !== "shot";
+    $("#camTake").hidden = state !== "live"; $("#camRetake").hidden = $("#camUse").hidden = state !== "shot";
+  }
+  async function takePhoto() {
+    if (!chatFile) return toast("Download a model first, then pick it at the top.");
+    if (!window.OMD.perms(chatFile).upload) return toast(`${chatName()} isn't allowed to see pictures you add. You can change that in My models (⚙️ on its card), or pick another model.`, 6000);
+    if (busy) return toast("Wait for the answer to finish first.");
+    if (!(await mayUseCamera())) return;
+    cam.shot = null; camShow("live"); cam.dlg.showModal();
+    await camStart();
+    $("#camTake").focus();
+  }
+  $("#camPick").addEventListener("change", (e) => camStart(e.target.value));
+  $("#camTake").addEventListener("click", () => {
+    const v = $("#camVideo"); if (!v.videoWidth) return;
+    const c = document.createElement("canvas"); c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext("2d").drawImage(v, 0, 0);
+    c.toBlob((b) => { cam.shot = b; $("#camShot").src = URL.createObjectURL(b); camShow("shot"); $("#camUse").focus(); }, "image/jpeg", 0.9);
+  });
+  $("#camRetake").addEventListener("click", () => { cam.shot = null; camShow("live"); });
+  $("#camUse").addEventListener("click", async () => {
+    const b = cam.shot; cam.dlg.close();
+    if (!b) return;
+    const d = new Date(), name = `photo-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}.jpg`;
+    await addFiles([new File([b], name, { type: "image/jpeg" })], { photo: true });
+  });
+  $("#camCancel").addEventListener("click", () => cam.dlg.close());
+  cam.dlg.addEventListener("close", () => { camStop(); D.sys.allowCamera(false); if ($("#camShot").src) URL.revokeObjectURL($("#camShot").src); $("#camShot").removeAttribute("src"); });
+
+  // 📎 opens a small menu: files from this computer, or a photo.
+  const amenu = $("#attachMenu");
+  const closeMenu = () => { amenu.hidden = true; $("#attachBtn").setAttribute("aria-expanded", "false"); };
+  document.addEventListener("click", (e) => { if (!amenu.hidden && !e.target.closest("#attachMenu, #attachBtn")) closeMenu(); });
+  amenu.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeMenu(); $("#attachBtn").focus(); } });
+  amenu.addEventListener("click", async (e) => {
+    const m = e.target.closest("[data-am]")?.dataset.am; if (!m) return;
+    closeMenu();
+    if (m === "photo") return takePhoto();
+    if (!chatFile) return toast("Download a model first, then pick it at the top.");
+    if (!window.OMD.perms(chatFile).upload) return toast(`${chatName()} isn't allowed to read files you add. You can change that in My models (⚙️ on its card), or pick another model.`, 6000);
+    if (await mayAddFiles()) $("#attachInput").click();
+  });
+
+  $("#attachInput").addEventListener("change", (e) => { const f = [...e.target.files]; e.target.value = ""; addFiles(f); });
+  const main = document.querySelector("#view-chat .chatmain"), zone = $("#dropZone");
+  let dragDepth = 0;
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+  main.addEventListener("dragenter", (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; zone.hidden = false; });
+  main.addEventListener("dragover", (e) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } });
+  main.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; zone.hidden = true; } });
+  main.addEventListener("drop", (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; zone.hidden = true; addFiles(e.dataTransfer.files); });
+  document.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });   // a file dropped outside the chat mustn't open in the window
+  document.addEventListener("drop", (e) => { if (hasFiles(e)) e.preventDefault(); });
+  prompt.addEventListener("paste", (e) => { const f = [...(e.clipboardData?.files || [])]; if (f.length) { e.preventDefault(); addFiles(f); } });
+  // The message the model gets: what you typed plus the text of each file (kept within what the model can take).
+  function compose(text, list, file) {
+    const docs = list.filter((a) => a.kind === "text"), pics = list.filter((a) => a.kind === "image");
+    let room = canSee(file) ? 100000 : 12000;
+    const parts = [];
+    for (const a of docs) {
+      const share = Math.max(1500, Math.floor(room / Math.max(1, docs.length - parts.length)));
+      let t = a.text; a.chars = t.length;
+      if (t.length > share) { t = t.slice(0, share); a.cut = true; }
+      room -= t.length;
+      parts.push(`Attached file "${a.name}"${a.cut ? ` (only the first ${t.length.toLocaleString()} of ${a.chars.toLocaleString()} characters, because it's long)` : ""}:\n"""\n${t}\n"""`);
+    }
+    if (pics.length && !canSee(file)) parts.push(`[The user also added ${pics.length === 1 ? `a picture (${pics[0].name})` : `${pics.length} pictures (${pics.map((p) => p.name).join(", ")})`}, but you can't see pictures. Say so in one short sentence, and mention that Claude can see pictures.]`);
+    const ask = text || (docs.length ? `Please read ${docs.length === 1 ? "this file" : "these files"}, and tell me briefly what ${docs.length === 1 ? "it's" : "they're"} about.` : "What's in this picture?");
+    return { ctx: parts.length ? parts.join("\n\n") + "\n\n" + ask : ask, images: canSee(file) ? pics.map((p) => ({ mime: p.mime, data: p.data })) : [] };
+  }
+
+
   // ---------- Talking in Chat: press 🎤, speak, and it sends what you said; the answer is read out and saved like any chat ----------
   let talk = null;
   const micBtn = $("#micBtn"), micState = (t) => { $("#micState").textContent = t; };
   const LISTENING = "🎤 Listening… just talk, and it sends when you pause. Press 🎤 again (or Esc) to stop.";
   async function startTalk() {
+    if (chatFile && !window.OMD.perms(chatFile).mic) { toast(`${chatName()} isn't allowed to be talked to with the microphone. You can change that in My models (⚙️ on its card).`, 6000); return; }
     micBtn.disabled = true;
     try {
       const l = await window.OMDVoice.listen({
@@ -362,31 +563,36 @@
   $("#composer").addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = prompt.value.trim();
-    if (!text || busy) return;
+    if ((!text && !attached.length) || busy) return;
     if (!chatFile) { toast("Download a model first, then pick it at the top."); return; }
+    if (attached.some((a) => a.reading)) { toast("Still reading your files…"); return; }
+    if (attached.length && !window.OMD.perms(chatFile).upload) { toast(`${chatName()} isn't allowed to read files you add. Remove them, or change that in My models (⚙️ on its card).`, 6000); return; }
+    const att = attached; attached = []; renderChips();
+    const { ctx, images } = compose(text, att, chatFile);
     prompt.value = ""; prompt.style.height = "auto";
     if ($("#messages .empty")) $("#messages").innerHTML = "";
     const mm = window.OMD.chatChoices.find((m) => m.file === chatFile) || {};
     const modelName = (mm.modelName || mm.name || "") + (mm.online ? " · online" : "");
-    if (!cur) cur = { id: newId(), title: titleFrom(text), created: Date.now(), messages: [] };
+    if (!cur) cur = { id: newId(), title: titleFrom(text || att.map((a) => a.name).join(", ")), created: Date.now(), messages: [] };
     const conv = cur;   // keep hold of it, in case "New chat" is pressed while this answer is coming in
     const history = historyOf(cur.messages), earlier = earlierNames(cur);
     cur.model = chatFile; cur.modelName = mm.name || modelName;
     const v = window.Speaker.defaultVoice;
     const spoken = !!talk;                       // asked out loud with the 🎤 button
-    const um = { role: "user", text, at: Date.now(), ...(spoken ? { voice: true } : {}) };
+    const um = { role: "user", text, at: Date.now(), ...(spoken ? { voice: true } : {}),
+      ...(att.length ? { ctx, attach: att.map((a) => ({ name: a.name, kind: a.kind, ...(a.kind === "text" ? { chars: a.chars, ...(a.cut ? { cut: true } : {}) } : { thumb: a.thumb }) })) } : {}) };
     const speech = spoken || window.OMDSettings?.get().speakChat ? window.Speaker.stream(v.id) : null;
     if (spoken) micState("Thinking…");
     const bm = { role: "bot", text: "", thought: "", who: modelName, voice: v.id, model: chatFile, pending: true };
     cur.messages.push(um, bm);
-    userEl(text);
+    userEl(text, um.attach);
     const bot = botEl(bm);
     persist();
     const ans = bot.querySelector(".answer"), th = bot.querySelector(".thinking"), who = bot.querySelector(".mname");
     setBusy(true);
     try {
       const r = await ask({
-        file: chatFile, text, convId: conv.id, history, claudeSession: conv.claudeSession, files: filesOn(), fast: spoken,
+        file: chatFile, text: ctx, images, convId: conv.id, history, claudeSession: conv.claudeSession, files: filesOn(chatFile), fast: spoken,
         onText: (t) => { bm.text += t; showAnswer(ans, bm.text, { request: text, earlier, bm, conv }); bot.scrollIntoView({ block: "end" }); speech?.push(bm.text); if (spoken) micState("Answering…"); },
         onRoute: (r) => { bm.who = `✨ Optimal picked it · for ${r.taskLabel}${r.fits ? "" : ` (nothing fits ${r.tierGB} GB, so the smallest)`}`; who.textContent = bm.who;
           if (r.file) { bm.model = r.file; bot.querySelector(".wicon").innerHTML = window.OMD.modelIcon(r.file); bot.querySelector(".wname").textContent = window.OMD.nameOf(r.file) || r.name; } },

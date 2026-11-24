@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#3341d6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="icon" href="/icon.png">
+<link rel="apple-touch-icon" href="/icon.png">
+<title>Open Model Desktop</title>
+<style>
+:root { --bg: #f3f4f8; --surface: #fff; --text: #14161f; --muted: #5d6275; --line: #e2e4ee; --accent: #3341d6; --accent-ink: #fff; --bot: #fff; --err: #c0262d; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0f1117; --surface: #181b24; --text: #eceef5; --muted: #9aa0b4; --line: #2a2e3b; --accent: #6f7cff; --accent-ink: #0f1117; --bot: #181b24; --err: #ff7a7f; } }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%; }
+body { display: flex; flex-direction: column; height: 100dvh; }
+header { display: flex; align-items: center; gap: 10px; padding: calc(10px + env(safe-area-inset-top)) 14px 10px; background: var(--surface); border-bottom: 1px solid var(--line); }
+header img { width: 30px; height: 30px; border-radius: 8px; }
+header select { flex: 1; min-width: 0; font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+button { font: inherit; cursor: pointer; }
+.ib { border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 10px; min-width: 40px; height: 40px; padding: 0 10px; font-size: 17px; }
+.ib[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+main { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.msg { max-width: 88%; padding: 10px 13px; border-radius: 16px; overflow-wrap: anywhere; }
+.msg.user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.msg.bot { align-self: flex-start; background: var(--bot); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg .who { font-size: 12.5px; color: var(--muted); margin-bottom: 3px; font-weight: 600; }
+.msg pre { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px; overflow-x: auto; font-size: 13px; white-space: pre; }
+.msg code { font-size: 13.5px; }
+.msg .err { color: var(--err); }
+.dots { letter-spacing: 3px; color: var(--muted); animation: blink 1.2s infinite; }
+@keyframes blink { 50% { opacity: .35; } }
+form { display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--line); align-items: flex-end; }
+textarea { flex: 1; resize: none; font: inherit; font-size: 16px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; max-height: 160px; }
+.send { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 12px; height: 44px; padding: 0 16px; font-weight: 600; }
+.hint { text-align: center; color: var(--muted); font-size: 13px; padding: 4px 16px 0; }
+.empty, .gate { margin: auto; max-width: 420px; text-align: center; color: var(--muted); padding: 24px 12px; }
+.gate h1 { color: var(--text); font-size: 22px; margin: 12px 0 6px; }
+.gate img { width: 64px; height: 64px; border-radius: 16px; }
+.menu { position: absolute; right: 12px; top: calc(60px + env(safe-area-inset-top)); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 14px 30px -12px rgba(0,0,0,.35); padding: 6px; z-index: 3; min-width: 230px; }
+.menu button { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--text); padding: 11px 12px; border-radius: 10px; font-size: 15px; }
+.menu button:hover, .menu button:focus-visible { background: var(--bg); }
+.menu .danger { color: var(--err); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header id="top" hidden>
+  <img src="/icon.png" alt="">
+  <select id="model" aria-label="Model"></select>
+  <button class="ib" id="speak" type="button" aria-pressed="false" title="Read answers out loud" aria-label="Read answers out loud">🔈</button>
+  <button class="ib" id="more" type="button" aria-haspopup="true" aria-expanded="false" aria-label="More">⋯</button>
+</header>
+<div class="menu" id="menu" hidden role="menu">
+  <button type="button" role="menuitem" data-m="new">＋ New chat</button>
+  <button type="button" role="menuitem" data-m="forget" class="danger">Disconnect this phone</button>
+</div>
+<main id="log" aria-live="polite"></main>
+<div class="hint" id="hint" hidden>Tip: tap 🎤 on your keyboard to talk instead of typing. Your models run on your PC.</div>
+<form id="form" hidden>
+  <textarea id="text" rows="1" placeholder="Message your model…" aria-label="Message" enterkeyhint="send"></textarea>
+  <button class="send" id="sendBtn" type="submit">Send</button>
+  <button class="send" id="stopBtn" type="button" hidden>Stop</button>
+</form>
+<script>
+(() => {
+  "use strict";
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const store = { get(k, d) { try { const v = localStorage.getItem("omd." + k); return v == null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem("omd." + k, JSON.stringify(v)); } catch {} } };
+  const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  let models = [], conv = store.get("conv", null), busy = false, ctrl = null;
+  let speakOn = store.get("speak", false);
+
+  function md(s) {
+    const parts = String(s).split(/```[^\n]*\n?/);
+    return parts.map((p, i) => i % 2 ? `<pre><code>${esc(p.replace(/\n$/, ""))}</code></pre>` :
+      esc(p).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>")).join("");
+  }
+  function gate(title, body, extra = "") {
+    $("#top").hidden = $("#form").hidden = $("#hint").hidden = true;
+    $("#log").innerHTML = `<div class="gate"><img src="/icon.png" alt=""><h1>${esc(title)}</h1><p>${body}</p>${extra}</div>`;
+  }
+  async function api(p, body) {
+    const r = await fetch(p, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(j.error || "Something went wrong."); e.status = r.status; throw e; }
+    return j;
+  }
+
+  // ---------- Pairing: the QR code on the PC opens this page with a code after the # ----------
+  async function start() {
+    const k = (location.hash.match(/k=([a-f0-9]+)/) || [])[1];
+    if (k) {
+      history.replaceState(null, "", "/");
+      gate("Waiting for your PC", "On your PC, press <b>Allow</b> to let this phone use your models.", `<p class="dots">●●●</p>`);
+      try { await api("/api/pair", { k }); } catch (err) { return gate("Couldn't connect", esc(err.message)); }
+    }
+    try { const r = await api("/api/models"); models = r.models; }
+    catch (err) {
+      if (err.status === 401) return gate("Scan the code on your PC", "On your PC, open Open Model Desktop, press <b>📱 Phone</b> in Chat or Voice, and scan the QR code with this phone's camera. Both need to be on the same Wi-Fi.");
+      return gate("Couldn't reach your PC", esc(err.message) + "<br><br>Check the PC is on, the app is open, and both are on the same Wi-Fi.", `<p><button class="send" onclick="location.reload()">Try again</button></p>`);
+    }
+    $("#top").hidden = $("#form").hidden = $("#hint").hidden = false;
+    fillModels(); render();
+    $("#text").focus({ preventScroll: true });
+  }
+  function fillModels() {
+    const want = conv?.model || store.get("model", "");
+    const pick = models.find((m) => m.file === want) || models.find((m) => !m.auto) || models[0];
+    $("#model").innerHTML = models.length ? models.map((m) => `<option value="${esc(m.file)}" ${m === pick ? "selected" : ""}>${esc(m.name)}${m.running ? " · running" : ""}</option>`).join("")
+      : `<option value="">No models allowed on this phone</option>`;
+  }
+  $("#model").addEventListener("change", (e) => { store.set("model", e.target.value); if (conv) { conv.model = e.target.value; save(); } });
+  const nameOf = (file) => models.find((m) => m.file === file)?.name || "Model";
+
+  // ---------- Messages ----------
+  function render() {
+    const log = $("#log");
+    if (!conv || !conv.messages.length) { log.innerHTML = `<div class="empty">Ask anything. The answer comes from the model running on your PC.</div>`; return; }
+    log.innerHTML = conv.messages.map((m) => m.role === "user" ? `<div class="msg user">${esc(m.text)}</div>`
+      : `<div class="msg bot"><div class="who">${esc(m.who || nameOf(m.model))}</div><div class="ans">${m.error ? `<span class="err">${esc(m.error)}</span>` : m.pending ? `<span class="dots">●●●</span>` : md(m.text || "(stopped)")}</div></div>`).join("");
+    log.lastElementChild?.scrollIntoView({ block: "end" });
+  }
+  const save = () => store.set("conv", conv ? { ...conv, messages: conv.messages.filter((m) => !m.pending) } : null);
+  function setBusy(v) { busy = v; $("#sendBtn").hidden = v; $("#stopBtn").hidden = !v; }
+
+  // Read answers out loud with the phone's own voice.
+  function paintSpeak() { $("#speak").setAttribute("aria-pressed", speakOn); $("#speak").textContent = speakOn ? "🔊" : "🔈"; }
+  $("#speak").addEventListener("click", () => { speakOn = !speakOn; store.set("speak", speakOn); paintSpeak(); if (!speakOn) speechSynthesis?.cancel(); else say("Okay, I'll read answers out loud."); });
+  function say(t) {
+    if (!window.speechSynthesis) return;
+    const clean = t.replace(/```[\s\S]*?(```|$)/g, " I've written some code, have a look on the screen. ").replace(/[*_`#>]/g, "").trim();
+    if (!clean) return;
+    const u = new SpeechSynthesisUtterance(clean.slice(0, 3000)); speechSynthesis.cancel(); speechSynthesis.speak(u);
+  }
+  paintSpeak();
+
+  $("#text").addEventListener("input", (e) => { e.target.style.height = "auto"; e.target.style.height = Math.min(160, e.target.scrollHeight) + "px"; });
+  $("#text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !/Android|iPhone|iPad/.test(navigator.userAgent)) { e.preventDefault(); $("#form").requestSubmit(); } });
+  $("#stopBtn").addEventListener("click", () => { ctrl?.abort(); api("/api/stop", {}).catch(() => {}); });
+  $("#form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = $("#text").value.trim(), file = $("#model").value;
+    if (!text || busy || !file) return;
+    $("#text").value = ""; $("#text").style.height = "auto";
+    if (!conv) conv = { id: newId(), title: text.slice(0, 60), messages: [], model: file, claudeSession: null };
+    if (conv.model !== file) conv.claudeSession = null;
+    conv.model = file;
+    const prior = conv.messages.filter((m) => !m.error && m.text);
+    const bm = { role: "bot", text: "", model: file, pending: true };
+    conv.messages.push({ role: "user", text, at: Date.now() }, bm);
+    render(); setBusy(true);
+    ctrl = new AbortController();
+    try {
+      const r = await fetch("/api/chat", { method: "POST", signal: ctrl.signal, headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, file, history: prior.map((m) => ({ role: m.role, text: m.text })), claudeSession: conv.claudeSession, conv: { id: conv.id, title: conv.title, messages: prior } }) });
+      if (r.status === 401) { conv.messages.pop(); conv.messages.pop(); save(); return start(); }
+      if (!r.ok || !r.body) throw new Error((await r.json().catch(() => ({}))).error || "Your PC didn't answer.");
+      const reader = r.body.getReader(), dec = new TextDecoder(); let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read(); if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i; while ((i = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line) continue;
+          const ev = JSON.parse(line);
+          if (ev.t === "text") { bm.text += ev.v; delete bm.pending; render(); }
+          else if (ev.t === "route") { bm.who = `✨ Optimal picked ${ev.name}`; bm.model = ev.file; render(); }
+          else if (ev.t === "done") {
+            if (ev.error) bm.error = ev.error; else { bm.text = ev.text || bm.text; if (ev.session) conv.claudeSession = ev.session; if (!bm.text) bm.text = "(stopped)"; else if (speakOn) say(bm.text); }
+          }
+        }
+      }
+    } catch (err) { if (err.name === "AbortError") { if (!bm.text) bm.text = "(stopped)"; } else bm.error = err.message === "Failed to fetch" || err.message === "Load failed" ? "Lost the connection to your PC. Is it still on and on the same Wi-Fi?" : err.message; }
+    finally { delete bm.pending; ctrl = null; setBusy(false); render(); save(); }
+  });
+
+  // ---------- Menu ----------
+  const menu = $("#menu");
+  $("#more").addEventListener("click", (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; $("#more").setAttribute("aria-expanded", !menu.hidden); if (!menu.hidden) menu.querySelector("button").focus(); });
+  document.addEventListener("click", () => { menu.hidden = true; $("#more").setAttribute("aria-expanded", "false"); });
+  menu.addEventListener("click", async (e) => {
+    const m = e.target.closest("[data-m]")?.dataset.m; if (!m) return;
+    if (m === "new") { if (busy) $("#stopBtn").click(); conv = null; save(); render(); $("#text").focus(); }
+    if (m === "forget") { await api("/api/forget", {}).catch(() => {}); conv = null; save(); gate("Disconnected", "This phone can't use your models any more. Scan the code on your PC again to reconnect."); }
+  });
+  start();
+})();
+</script>
+</body>
+</html>

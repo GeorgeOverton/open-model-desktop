@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' app: blob: data: https://huggingface.co; img-src 'self' data:; style-src 'self' 'unsafe-inline'; media-src 'self' blob: data:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' app: blob: data: https://huggingface.co; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; media-src 'self' blob: data:">
   <title>Open Model Desktop</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -119,9 +119,20 @@
           <label class="small" for="chatModel">Model</label>
           <select id="chatModel"></select>
           <button class="btn sm" id="newChat">New chat</button>
+          <button class="btn sm castbtn" data-cast type="button">📱 Phone</button>
         </div>
         <div class="messages" id="messages" aria-live="polite"></div>
+        <div class="dropzone" id="dropZone" hidden><div>📎 Drop files or pictures to add them to your message</div></div>
+        <div class="attachrow" id="attachRow" hidden aria-label="Files added to your message"></div>
         <form class="composer" id="composer">
+          <div class="attachwrap">
+            <button class="btn" id="attachBtn" type="button" title="Add files, pictures or a photo (or drag files here)" aria-label="Add files, pictures or a photo" aria-haspopup="true" aria-expanded="false">📎</button>
+            <div class="attachmenu" id="attachMenu" role="menu" hidden>
+              <button type="button" role="menuitem" data-am="files">📄 Files or pictures from this computer</button>
+              <button type="button" role="menuitem" data-am="photo">📷 Take a photo</button>
+            </div>
+          </div>
+          <input type="file" id="attachInput" multiple hidden>
           <textarea id="prompt" rows="1" placeholder="Message your model…  (Enter to send, Shift+Enter for a new line)" aria-label="Message"></textarea>
           <button class="btn" id="micBtn" type="button" aria-pressed="false" title="Talk instead of typing" aria-label="Talk instead of typing">🎤</button>
           <button class="btn primary" id="sendBtn" type="submit">Send</button>
@@ -136,6 +147,7 @@
         <header class="hero">
           <h1>Voice mode</h1>
           <p class="lead">Say a wake phrase like <strong>"Hey Jarvis"</strong>, then your question. It answers out loud in a natural English voice. Listening always happens on this computer, and answers do too unless a phrase uses Claude (online).</p>
+          <p><button class="btn sm castbtn" data-cast type="button">📱 Use on my phone</button></p>
         </header>
 
         <div class="voicestage">
@@ -197,6 +209,46 @@
           </div>
         </section>
 
+        <section class="sblock" id="alexaSection">
+          <h2>Amazon Alexa</h2>
+          <div class="way">
+            <p class="small muted">Say <b>"Alexa, ask <span class="alexaInv">my computer</span> what's a good name for a cat?"</b> and a model on this PC answers through your Echo.
+              It needs your own free Alexa skill and a free ngrok tunnel so Amazon can reach this PC. It takes about 15 minutes to set up once: follow the steps below.</p>
+            <label class="toggle inline"><input type="checkbox" id="alexaOn"> Let Alexa use my models</label>
+            <div class="alexastat" id="alexaStatus" aria-live="polite"></div>
+            <div class="alexagrid">
+              <label for="alexaModel">Model Alexa uses</label><select id="alexaModel"></select>
+              <label for="alexaInvocation">What you say after "Alexa, ask"</label><input id="alexaInvocation" maxlength="40" placeholder="my computer">
+              <label for="alexaSkillId">Your skill ID</label><input id="alexaSkillId" placeholder="amzn1.ask.skill.…" spellcheck="false">
+              <label for="alexaToken">ngrok authtoken</label><input id="alexaToken" type="password" autocomplete="off" spellcheck="false">
+              <label for="alexaDomain">ngrok domain</label><input id="alexaDomain" placeholder="something.ngrok-free.app" spellcheck="false">
+              <label for="alexaNgrokPath">ngrok.exe (if not found)</label><input id="alexaNgrokPath" placeholder="C:\Users\you\Downloads\ngrok.exe" spellcheck="false">
+            </div>
+            <p class="small"><button class="btn sm" id="alexaCopyModel" type="button">Copy skill setup (JSON)</button>
+              <button class="btn sm" id="alexaCopyUrl" type="button">Copy endpoint address</button></p>
+            <details class="alexasteps"><summary>Setup steps</summary>
+              <ol class="small">
+                <li><b>ngrok (the tunnel).</b> Make a free account at <button class="linkish" data-ext="https://dashboard.ngrok.com/signup">ngrok.com</button>.
+                  Copy <b>Your Authtoken</b> and paste it above. Under <b>Domains</b>, claim your free static domain and paste it above.
+                  Install ngrok: in Windows Terminal type <code>winget install ngrok.ngrok</code>, or download it from
+                  <button class="linkish" data-ext="https://ngrok.com/download">ngrok.com/download</button> and put ngrok.exe's location in the box above.</li>
+                <li>Tick <b>Let Alexa use my models</b>. The status should say <b>Online</b> with your address.</li>
+                <li><b>The skill.</b> Open the <button class="linkish" data-ext="https://developer.amazon.com/alexa/console/ask">Alexa developer console</button>
+                  and sign in with the <b>same Amazon account as your Echo</b> (it's free). Press <b>Create Skill</b>: any name, <b>Other</b> → <b>Custom</b> model,
+                  <b>Provision your own</b> hosting, <b>Start from scratch</b>.</li>
+                <li>In <b>Build → Interaction Model → JSON Editor</b>, delete what's there, press <b>Copy skill setup</b> above and paste it. Press <b>Save</b>, then <b>Build skill</b>.</li>
+                <li>In <b>Build → Endpoint</b>, choose <b>HTTPS</b>. Press <b>Copy endpoint address</b> above and paste it into <b>Default Region</b>. For the certificate, choose
+                  <b>"My development endpoint is a sub-domain of a domain that has a wildcard certificate from a certificate authority"</b>. Press <b>Save</b>.</li>
+                <li>Copy the <b>Skill ID</b> shown on that page (it starts amzn1.ask.skill) and paste it above.</li>
+                <li>Open the <b>Test</b> tab and switch testing to <b>Development</b>. Type "ask my computer what is two plus two" to try it, then say it to your Echo.</li>
+              </ol>
+              <p class="small muted">Alexa waits about 8 seconds for an answer. If a model takes longer, Alexa says it's still thinking: say <b>"what's the answer"</b> a few seconds later.
+                Say <b>"start over"</b> for a new conversation. Your PC must be on with the app open. Only your own skill is let in: every request is checked for Amazon's signature and your skill ID.
+                Alexa chats are saved in Saved chats (they start with 🔊).</p>
+            </details>
+          </div>
+        </section>
+
         <section class="sblock">
           <h2>Optimal mode</h2>
           <div class="way" id="autoBox"></div>
@@ -230,6 +282,10 @@
               <label class="toggle inline"><input type="checkbox" id="filesAutoSave"> Save files without asking me first</label>
               <label class="toggle inline"><input type="checkbox" id="filesAutoRun"> Open programs and scripts (like .py, .bat, .ps1) without asking me first</label>
             </div>
+            <label class="field inline">Files and pictures you add to a chat (📎 or drag and drop)
+              <select id="fileAccess"><option value="ask">Ask me first</option><option value="always">Always allow</option><option value="never">Never allow</option></select></label>
+            <label class="field inline">Camera, for taking a photo in a chat (📎 → Take a photo)
+              <select id="cameraAccess"><option value="ask">Ask me first</option><option value="always">Always allow</option><option value="never">Never allow</option></select></label>
             <p class="small muted">When you ask any model for a file, the app asks before saving it in <b id="filesWhere">Documents › Open Model Desktop</b> (a folder for each chat),
               and asks again before opening one that would run on your computer. Pressing "Always" on a file turns on the boxes above; untick them to be asked again. Deleting a chat keeps its files.
               <button class="linkish" id="openFilesFolder">Open the files folder</button></p>
@@ -281,6 +337,16 @@
 
   <div id="toast" class="toast" role="status"></div>
 
+  <dialog class="camdlg" id="camDlg" aria-labelledby="camTitle">
+    <h2 id="camTitle">📷 Take a photo</h2>
+    <div class="camstage"><video id="camVideo" playsinline muted hidden></video><img id="camShot" alt="Your photo" hidden><p id="camMsg" class="muted"></p></div>
+    <div class="row"><select id="camPick" aria-label="Camera" hidden></select>
+      <span class="rowr"><button class="btn" id="camCancel" type="button">Cancel</button>
+        <button class="btn" id="camRetake" type="button" hidden>Retake</button>
+        <button class="btn primary" id="camUse" type="button" hidden>Use this photo</button>
+        <button class="btn primary" id="camTake" type="button" disabled>📸 Take photo</button></span></div>
+  </dialog>
+  <dialog class="ask castdlg" id="castDlg" aria-labelledby="castTitle"><h2 id="castTitle">📱 Use your models on your phone</h2><div id="castBody"></div></dialog>
   <script src="models.js"></script>
   <script src="showcase-data.js"></script>
   <script src="vendor/vosk.js"></script>
@@ -290,5 +356,7 @@
   <script src="chat.js"></script>
   <script src="settings.js"></script>
   <script src="voice.js"></script>
+  <script src="cast.js"></script>
+  <script src="alexa.js"></script>
 </body>
 </html>

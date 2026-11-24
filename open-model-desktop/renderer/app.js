@@ -24,7 +24,8 @@
     mine: [],            // downloaded models
     dl: new Map(),       // active downloads: id -> {name, quant, got, total}
     engine: { state: "idle", file: null }, // the latest status
-    running: new Map(),                    // every model running now: file -> { state, progress, gpu, limit }
+    running: new Map(),
+    modelPerms: {},                        // what each model may do (My models → ⚙️), from settings                    // every model running now: file -> { state, progress, gpu, limit }
   };
 
   // ---------- Shared helpers for chat.js and voice.js ----------
@@ -50,7 +51,7 @@
     const models = state.mine.filter((m) => !(m.tags || []).includes("embeddings"));
     return models.some((m) => !m.online) ? [...AUTO, ...models] : models;
   };
-  window.OMD = { $, esc, toast, show, bus, store, avatar, modelIcon: (f, big) => modelIcon(f, big), nameOf: (f) => nameOf(f), get running() { return state.running; }, get mine() { return state.mine; }, get chatChoices() { return chatChoices(); }, fmtGB: (gb) => fmtGB(gb), refreshMine: () => refreshMine() };
+  window.OMD = { $, esc, toast, show, bus, store, avatar, perms: (f) => perms(f), askDialog: (o) => askDialog(o), modelIcon: (f, big) => modelIcon(f, big), nameOf: (f) => nameOf(f), get running() { return state.running; }, get mine() { return state.mine; }, get chatChoices() { return chatChoices(); }, fmtGB: (gb) => fmtGB(gb), refreshMine: () => refreshMine() };
 
   document.querySelector(".nav").addEventListener("click", (e) => { const b = e.target.closest("[data-view]"); if (b) show(b.dataset.view); });
   // Coming to Find models always starts on Starter picks.
@@ -252,6 +253,35 @@
     const { hue = file === "@claude" ? 18 : 230, sat = 55 } = MAKERS[maker] || {};
     const inner = file === "@claude" ? `<span class="mono">A</span>` : logoImg(maker, m.name);
     return `<span class="${cls}" style="--mh:${hue};--ms:${sat}%" title="${esc(m.name || "")}" aria-hidden="true">${inner}</span>`;
+  }
+  // ---------- What each model may do (My models → ⚙️ flips the card) ----------
+  const PERMS = [
+    { id: "upload", icon: "📎", label: "File Uploading", hint: "Documents, PDFs, spreadsheets and photos you add in Chat" },
+    { id: "save", icon: "💾", label: "File Creation", hint: "Code, documents and lists it writes for you" },
+    { id: "run", icon: '<svg class="ico" viewBox="0 0 24 24" width="1.1em" height="1.1em" aria-hidden="true"><rect x="1.5" y="3" width="21" height="18" rx="3.8" fill="#1e2433" stroke="#7d8db0" stroke-width="1"/><path d="M1 6.5a4 4 0 0 1 4-4h14a4 4 0 0 1 4 4v1H1z" fill="#3a4560"/><circle cx="4.6" cy="5" r=".9" fill="#ff5f57"/><circle cx="7.4" cy="5" r=".9" fill="#febc2e"/><circle cx="10.2" cy="5" r=".9" fill="#28c840"/><path d="M5.5 11.5l3.5 3-3.5 3" fill="none" stroke="#3dff9a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.5 17.5h6" stroke="#3dff9a" stroke-width="2" stroke-linecap="round"/></svg>', label: "Open Programs", hint: "Like .py, .bat or .ps1 files, which run on your computer" },
+    { id: "mic", icon: "🎤", label: "Microphone Access", hint: "Voice mode and the 🎤 button in Chat" },
+    { id: "cast", icon: '<svg class="ico" viewBox="0 0 24 24" width="1.1em" height="1.1em" aria-hidden="true"><rect x="1" y="1" width="22" height="22" rx="5" fill="#2f7bf5"/><g fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round"><path d="M5.5 13.2a5.3 5.3 0 0 1 5.3 5.3"/><path d="M5.5 9a9.5 9.5 0 0 1 9.5 9.5"/><path d="M5.5 4.8a13.7 13.7 0 0 1 13.7 13.7"/></g><circle cx="5.9" cy="18.1" r="1.7" fill="#fff"/></svg>', label: "Remote Access", hint: "Phones you allowed with 📱 Phone, and your Alexa skill" },
+  ];
+  function perms(file) {
+    if (!file || String(file).startsWith("@auto")) return { upload: true, save: true, run: true, mic: true, cast: true };
+    const p = state.modelPerms[file] || {};
+    return Object.fromEntries(PERMS.map((x) => [x.id, p[x.id] !== false]));
+  }
+  bus.addEventListener("settings", (e) => { if (e.detail?.modelPerms) state.modelPerms = e.detail.modelPerms; });
+  D.settings.get().then((s) => { state.modelPerms = s.modelPerms || {}; }).catch(() => {});
+  // A question in a box, optionally with a "Remember my choice" tick. Resolves { yes, remember }.
+  function askDialog({ title, html, yes = "Allow", no = "Not now", remember = false }) {
+    return new Promise((resolve) => {
+      const d = document.createElement("dialog");
+      d.className = "ask";
+      d.innerHTML = `<h2>${esc(title)}</h2><div>${html}</div>${remember ? `<label class="toggle inline rem"><input type="checkbox" data-rem> Remember my choice</label>` : ""}
+        <div class="row"><button class="btn" data-a="no" type="button">${esc(no)}</button><button class="btn primary" data-a="yes" type="button">${esc(yes)}</button></div>`;
+      document.body.appendChild(d);
+      const done = (v) => { const r = { yes: v, remember: !!d.querySelector("[data-rem]")?.checked }; d.close(); d.remove(); resolve(r); };
+      d.addEventListener("click", (e) => { const b = e.target.closest("[data-a]"); if (b) done(b.dataset.a === "yes"); });
+      d.addEventListener("cancel", (e) => { e.preventDefault(); done(false); });
+      d.showModal(); d.querySelector("[data-a=yes]").focus();
+    });
   }
   const nameOf = (file) => state.mine.find((x) => x.file === file)?.name || (file === "@claude" ? "Claude" : String(file || "").startsWith("@auto") ? "Optimal" : "");
   const paramLabel = (m) => m.paramsLabel || (m.params ? (m.params < 1 ? Math.round(m.params * 1000) + "M" : +(+m.params).toFixed(1) + "B") : "");
@@ -653,13 +683,46 @@
     // Favourites always come first, then the chosen order.
     return [...list].sort((a, b) => (isFav(b.file) - isFav(a.file)) || by(a, b));
   }
+  function permsBack(m) {
+    const pm = perms(m.file);
+    return `<div class="face back" aria-hidden="true" inert><div class="pback">
+      <div class="pcode" aria-hidden="true"><span>SYS://ACCESS</span><span>${esc((m.file.split("/").pop() || "").replace(/\.gguf$/i, "").slice(0, 22))}</span></div>
+      <div class="phead">${modelIcon(m.file, true)}<div><h3>What ${esc(m.name)} may do</h3>
+        <p class="small muted">Switch off what it shouldn't do. Off beats "Always".</p></div></div>
+      ${PERMS.map((x) => `<label class="permrow" title="${esc(x.hint)}"><input type="checkbox" role="switch" data-perm="${x.id}" data-file="${esc(m.file)}" ${pm[x.id] ? "checked" : ""}>
+        <span><b>${x.icon} ${esc(x.label)}</b></span><i class="led" aria-hidden="true"></i></label>`).join("")}
+      <div class="pstat" aria-hidden="true" data-n="${PERMS.length}"></div>
+      <div class="row prow"><button class="btn sm primary" type="button" data-flip="${esc(m.file)}">Done</button></div>
+    </div></div>`;
+  }
+  function flipCard(file) {
+    const card = document.querySelector(`[data-card-for="${CSS.escape(file)}"]`); if (!card) return;
+    const on = !card.classList.contains("flipped");
+    card.classList.toggle("flipped", on);
+    const front = card.querySelector(".face.front"), back = card.querySelector(".face.back");
+    front.inert = on; front.setAttribute("aria-hidden", on); back.inert = !on; back.setAttribute("aria-hidden", !on);
+    (on ? back.querySelector("input") : front.querySelector("[data-flip]"))?.focus({ preventScroll: true });
+    if (!on) refreshMine();
+  }
+  async function setPerm(file, id, value) {
+    const s = await D.settings.get();
+    const all = { ...(s.modelPerms || {}) }, p = { ...(all[file] || {}) };
+    if (id === "*") for (const x of PERMS) delete p[x.id]; else if (value) delete p[id]; else p[id] = false;
+    if (Object.keys(p).length) all[file] = p; else delete all[file];
+    state.modelPerms = all;
+    if (window.OMDSettings?.save) await window.OMDSettings.save({ modelPerms: all }); else await D.settings.set({ modelPerms: all });
+  }
+  $("#mineGrid").addEventListener("change", (e) => { const c = e.target.closest("[data-perm]"); if (c) setPerm(c.dataset.file, c.dataset.perm, c.checked); });
   async function refreshMine() {
+    state.modelPerms = (await D.settings.get()).modelPerms || {};
     const local = await D.models.list();
     claude = await claudeEntry().catch(() => null);
     state.local = local;
     state.mine = claude?.ready ? [...local, claude] : local;   // Chat and wake phrases can use Claude too
     $("#mineCount").textContent = local.length || "";
-    $("#mineGrid").innerHTML = local.length ? sortMine(local).map((m) => { const f = factsFor(m.repo); const mm = { ...f, ...m, id: m.repo, use: f.use || m.blurb, sizeGB: m.size / 1e9 }; return `<article class="card mcard mine ${isFav(m.file) ? "fav" : ""}">
+    $("#mineGrid").innerHTML = local.length ? sortMine(local).map((m) => { const f = factsFor(m.repo); const mm = { ...f, ...m, id: m.repo, use: f.use || m.blurb, sizeGB: m.size / 1e9 };
+      const pm = perms(m.file), limited = PERMS.filter((x) => !pm[x.id]).length; return `<article class="card mcard mine ${isFav(m.file) ? "fav" : ""}" data-card-for="${esc(m.file)}">
+        <div class="flip"><div class="face front">
         ${tile(mm)}${star(m.file, m.name)}
         <div class="info">
         <div class="mname-row" data-name-for="${esc(m.file)}"><h3>${esc(m.name)}</h3><button class="cbtn" type="button" data-rename="${esc(m.file)}" title="Give it your own name" aria-label="Rename ${esc(m.name)}">✎</button></div>
@@ -667,9 +730,12 @@
         <div class="use">${esc(mm.use || "")}</div>
         <div class="foot">${pill(levelOf(mm.sizeGB, mm))}<span class="small muted" title="${esc(m.quant || "")}">${fmtGB(mm.sizeGB)} on disk</span></div>
         <div class="runrow" data-run-for="${esc(m.file)}">${runControls(m.file)}</div>
+        ${limited ? `<div class="lockline small" title="${esc(PERMS.filter((x) => !pm[x.id]).map((x) => "Not allowed: " + x.label.toLowerCase()).join("\n"))}">🔒 ${PERMS.filter((x) => !pm[x.id]).map((x) => x.icon).join(" ")} turned off for this model</div>` : ""}
         <div class="row"><button class="btn sm ghost" data-del="${esc(m.file)}">Delete</button>
-          <button class="btn sm" data-chat="${esc(m.file)}">Chat</button></div>
-        </div>
+          <span class="rowr"><button class="btn sm" data-flip="${esc(m.file)}" title="Choose what this model may do" aria-label="Permissions for ${esc(m.name)}">⚙️</button>
+          <button class="btn sm" data-chat="${esc(m.file)}">Chat</button></span></div>
+        </div></div>
+        ${permsBack(m)}</div>
       </article>`; }).join("")
       : `<div class="empty">No models yet. Go to <button class="linkish" data-goto="find">Find models</button> and press Download on one that says <span class="fitnote great">✓ Fits your computer</span>.<br>
          <span class="small">Not sure? <strong>Llama 3.2 3B</strong> or <strong>Qwen3 4B</strong> are great first picks. Or try a free <button class="linkish" data-goto="online">online model</button> straight away.</span></div>`;
@@ -766,6 +832,8 @@
     }
     const stop = e.target.closest("[data-stop]");
     if (stop) { await D.chat.unload(stop.dataset.stop || undefined); return; }
+    const fl = e.target.closest("[data-flip]");
+    if (fl) return flipCard(fl.dataset.flip);
     const rn = e.target.closest("[data-rename]");
     if (rn) return startRename(rn.dataset.rename);
     const wk = e.target.closest("[data-wake]");

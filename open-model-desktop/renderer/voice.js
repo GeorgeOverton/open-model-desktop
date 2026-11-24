@@ -359,9 +359,16 @@
   }
   async function handleCommand(entry, text) {
     clearTimeout(commandTimer); clearTimeout(followTimer);
+    const name = modelName(entry.model) || entry.phrase;
+    if (!window.OMD.perms(entry.model).mic) {   // My models → ⚙️: this model may not be talked to
+      log("you", text);
+      const o = log(name, "", "bot err", null, window.OMD.modelIcon(entry.model));
+      o.textContent = `${name} isn't allowed to be talked to with the microphone. You can change that in My models (⚙️ on its card).`;
+      active = null; setMode(audio ? "wake" : "off");
+      return;
+    }
     setMode("thinking");
     log("you", text);
-    const name = modelName(entry.model) || entry.phrase;
     const voice = voiceFor(entry);
     const out = log(name, "…", "bot", voice, window.OMD.modelIcon(entry.model));
     const line = out.parentElement;
@@ -375,7 +382,7 @@
     conv.model = entry.model; conv.modelName = name;
     const um = { role: "user", text, at: Date.now(), voice: true }, bm = { role: "bot", text: "", who: "🎙️ voice · " + voice.name, voice: voice.id, model: entry.model, pending: true };
     conv.messages.push(um, bm);
-    const files = window.OMDChat.files.filesOn();
+    const files = window.OMDChat.files.filesOn(entry.model);
     const system = [entry.personality || `You are ${entry.phrase.replace(/^(hey|ok|hi)\s+/i, "")}, a helpful voice assistant.`,
       "You are talking out loud, so answer in a few short spoken sentences. No lists, tables or markdown unless asked.",
       files ? "If the user asks you to make a file, still make it as a code block (the app saves it and won't read it out), and say in one short sentence what it is." : "No code blocks unless asked."].join(" ");

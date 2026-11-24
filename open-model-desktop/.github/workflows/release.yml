@@ -1,30 +1,101 @@
-# Builds the Windows installer and publishes it as a GitHub release.
-# To release: change "version" in package.json (for example to 0.8.0), then run
-#   git commit -am "Version 0.8.0" && git tag v0.8.0 && git push && git push --tags
-# The app's "Check for updates" button then finds the new version.
+# Publishes a new version of Open Model Desktop: the Windows installer, the Linux AppImage, and the files the app's
+# "Check for updates" button reads (latest.yml for Windows, latest-linux.yml for Linux).
+#
+# To release:
+#   1. Change "version" in package.json (for example to 0.18.0) and push that to GitHub.
+#   2. On GitHub: Actions → Release → Run workflow → Run workflow.
+# About 20 minutes later the new version is on the Releases page, and copies of the app offer it in Settings → Updates.
+# (Pushing a tag like v0.18.0 starts it too.)
 name: Release
 on:
+  workflow_dispatch:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 permissions:
   contents: write
+concurrency: release
 jobs:
-  windows:
-    runs-on: windows-latest
+  draft:
+    name: Make a draft release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      app: ${{ steps.v.outputs.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Find the app and its version
+        run: |
+          APP=.
+          [ -f open-model-desktop/package.json ] && APP=open-model-desktop
+          V=$(node -p "require('./$APP/package.json').version")
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Releasing version $V from $APP"
+      - name: Make (or reuse) the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          if gh release view "v$V" > /dev/null 2>&1; then
+            if [ "$(gh release view "v$V" --json isDraft -q .isDraft)" != "true" ]; then
+              echo "::error::Version $V is already released. Change \"version\" in package.json to a higher number, push it, and run this again."
+              exit 1
+            fi
+          else
+            gh release create "v$V" --draft --target "$GITHUB_SHA" --title "Open Model Desktop $V" \
+              --notes "Windows: download Open-Model-Desktop-Setup-$V.exe. Linux: download Open-Model-Desktop-$V.AppImage, make it executable and run it. Copies you already have offer this update in Settings → Updates."
+          fi
+
+  build:
+    name: Build for ${{ matrix.name }}
+    needs: draft
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            args: --win --x64
+          - name: Linux
+            os: ubuntu-latest
+            args: --linux --x64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ needs.draft.outputs.app }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: ${{ needs.draft.outputs.app }}/package-lock.json
       - run: npm ci
-      - name: Build and publish
+      - run: npm test
+      - name: Build and upload to the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >
-          npx electron-builder --win --x64 --publish always
+          npx electron-builder ${{ matrix.args }} --publish always
           -c.publish.provider=github
           -c.publish.owner=${{ github.repository_owner }}
           -c.publish.repo=${{ github.event.repository.name }}
-          -c.publish.releaseType=release
+          -c.publish.releaseType=draft
+
+  publish:
+    name: Publish the release
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish it as the latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ needs.draft.outputs.version }}
+        run: |
+          gh release view "v$V" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'
+          for f in latest.yml latest-linux.yml; do
+            gh release view "v$V" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -qx "$f" || { echo "::error::$f is missing from the release."; exit 1; }
+          done
+          gh release edit "v$V" -R "$GITHUB_REPOSITORY" --draft=false --latest
